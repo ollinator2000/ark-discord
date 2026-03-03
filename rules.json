@@ -1,0 +1,95 @@
+{
+  "rules": [
+    {
+      "name": "player_joined",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) \\[UniqueNetId:(?P<netid>[0-9a-fA-F]+) Platform:(?P<platform>[^\\]]+)\\] joined this ARK!$",
+      "title": "Spieler beigetreten",
+      "description": "**{player}** ist dem Server beigetreten.",
+      "emoji": "🟢",
+      "color": 3066993,
+      "fields": [
+        { "name": "Spieler", "value": "{player}" },
+        { "name": "Platform", "value": "{platform}" },
+        { "name": "NetId", "value": "`{netid}`" }
+      ]
+    },
+    {
+      "name": "player_left",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) \\[UniqueNetId:(?P<netid>[0-9a-fA-F]+) Platform:(?P<platform>[^\\]]+)\\] left this ARK!$",
+      "title": "Spieler verlassen",
+      "description": "**{player}** hat den Server verlassen.",
+      "emoji": "🔴",
+      "color": 15158332,
+      "fields": [
+        { "name": "Spieler", "value": "{player}" },
+        { "name": "Platform", "value": "{platform}" },
+        { "name": "NetId", "value": "`{netid}`" }
+      ]
+    },
+    {
+      "name": "player_death_by",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) - Lvl (?P<level>\\d+) \\(\\) was killed by (?P<killer>.+?)!$",
+      "title": "Spielertod",
+      "description": "**{player}** (Lvl {level}) wurde von **{killer}** getoetet.",
+      "emoji": "☠️",
+      "color": 10038562,
+      "fields": [
+        { "name": "Spieler", "value": "{player}" },
+        { "name": "Level", "value": "{level}" },
+        { "name": "Killer", "value": "{killer}" }
+      ]
+    },
+    {
+      "name": "player_death_unknown",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) - Lvl (?P<level>\\d+) \\(\\) was killed!$",
+      "title": "Spielertod",
+      "description": "**{player}** (Lvl {level}) ist gestorben.",
+      "emoji": "⚰️",
+      "color": 8359053,
+      "fields": [
+        { "name": "Spieler", "value": "{player}" },
+        { "name": "Level", "value": "{level}" }
+      ]
+    },
+    {
+      "name": "pve_tame_completed",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) tamed (?:an|a) (?P<dino>.+?) - Lvl (?P<level>\\d+).*$",
+      "title": "Neuer Tame",
+      "description": "**{player}** hat **{dino}** (Lvl {level}) gezähmt.",
+      "emoji": "🦖",
+      "color": 5763719,
+      "fields": [
+        { "name": "Spieler", "value": "{player}" },
+        { "name": "Dino", "value": "{dino}" },
+        { "name": "Level", "value": "{level}" }
+      ]
+    },
+    {
+      "name": "pve_dino_killed",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<killer>.+?) - Lvl (?P<killer_level>\\d+) .* killed (?P<dino>.+?) - Lvl (?P<dino_level>\\d+) .*$",
+      "title": "Dino getoetet",
+      "description": "**{killer}** hat **{dino}** (Lvl {dino_level}) getoetet.",
+      "emoji": "🏹",
+      "color": 3447003,
+      "fields": [
+        { "name": "Killer", "value": "{killer}" },
+        { "name": "Killer Lvl", "value": "{killer_level}" },
+        { "name": "Dino", "value": "{dino}" },
+        { "name": "Dino Lvl", "value": "{dino_level}" }
+      ]
+    },
+    {
+      "name": "online_service_difference",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]Difference Detected: (?P<left>\\d+) : OnlineService (?P<right>\\d+) : OnlineService$",
+      "title": "OnlineService Difference",
+      "description": "Difference Detected im OnlineService.",
+      "emoji": "🧩",
+      "color": 10181046,
+      "cooldown_seconds": 300,
+      "fields": [
+        { "name": "Wert A", "value": "{left}" },
+        { "name": "Wert B", "value": "{right}" }
+      ]
+    }
+  ]
+}
