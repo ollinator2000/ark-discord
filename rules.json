@@ -53,29 +53,54 @@
     },
     {
       "name": "pve_tame_completed",
-      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) tamed (?:an|a) (?P<dino>.+?) - Lvl (?P<level>\\d+).*$",
+      "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) of Tribe\\s*(?P<tribe>.*?)\\s*Tamed (?:an|a) (?P<dino>.+?) - Lvl (?P<level>\\d+) \\((?P<species>[^\\)]+)\\)!$",
       "title": "Neuer Tame",
       "description": "**{player}** hat **{dino}** (Lvl {level}) gezähmt.",
       "emoji": "🦖",
       "color": 5763719,
       "fields": [
         { "name": "Spieler", "value": "{player}" },
+        { "name": "Tribe", "value": "{tribe}" },
         { "name": "Dino", "value": "{dino}" },
-        { "name": "Level", "value": "{level}" }
+        { "name": "Level", "value": "{level}" },
+        { "name": "Species", "value": "{species}" }
       ]
     },
     {
       "name": "pve_dino_killed",
-      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<killer>.+?) - Lvl (?P<killer_level>\\d+) .* killed (?P<dino>.+?) - Lvl (?P<dino_level>\\d+) .*$",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<killer>.+?) (?:- Lvl \\d+ \\(\\) )?killed (?:(?:wild )?(?:an|a) )?(?P<dino>.+?)(?: - Lvl \\d+)?(?: \\(\\))?!$",
       "title": "Dino getoetet",
-      "description": "**{killer}** hat **{dino}** (Lvl {dino_level}) getoetet.",
+      "description": "**{killer}** hat **{dino}** getoetet.",
       "emoji": "🏹",
       "color": 3447003,
       "fields": [
         { "name": "Killer", "value": "{killer}" },
-        { "name": "Killer Lvl", "value": "{killer_level}" },
-        { "name": "Dino", "value": "{dino}" },
-        { "name": "Dino Lvl", "value": "{dino_level}" }
+        { "name": "Dino", "value": "{dino}" }
+      ]
+    },
+    {
+      "name": "pve_building_placement",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) placed (?:an|a) (?P<structure>.+?)(?:\\.|!|)$",
+      "title": "Building Placement",
+      "description": "**{player}** hat **{structure}** platziert.",
+      "emoji": "🏗️",
+      "color": 1752220,
+      "fields": [
+        { "name": "Spieler", "value": "{player}" },
+        { "name": "Struktur", "value": "{structure}" }
+      ]
+    },
+    {
+      "name": "pve_structure_destroyed",
+      "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\](?:(?:\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: )?(?P<attacker>.+?) destroyed )?Structure (?P<structure>.+?) destroyed at (?P<x>-?\\d+) (?P<y>-?\\d+) (?P<z>-?\\d+) .*!$",
+      "title": "Structure zerstoert",
+      "description": "**{structure}** wurde zerstoert.",
+      "emoji": "💥",
+      "color": 16098851,
+      "fields": [
+        { "name": "Struktur", "value": "{structure}" },
+        { "name": "Angreifer", "value": "{attacker}" },
+        { "name": "Position", "value": "X:{x} Y:{y} Z:{z}" }
       ]
     },
     {
