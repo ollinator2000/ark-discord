@@ -10,6 +10,9 @@ Bot für **ARK: Survival Ascended PvPvE**, der dein Gamelog live parst und die w
 - Regeln anpassbar über `rules.json` (ohne Code-Änderung)
 - Duplicate-Schutz für wiederholte Zeilen
 - Anti-Flood: Burst-Events werden in Sammel-Embeds gebündelt
+- Persistente Statistiken in SQLite (`ark_stats.db`)
+- Leaderboards automatisch alle 6 Stunden
+- Leaderboards on-demand per Slash-Command `/leaderboard`
 
 ## Voraussetzungen
 
@@ -45,14 +48,44 @@ copy .env.example .env
 - `DISCORD_CHANNEL_ID`: Discord Textchannel ID
 - `ARK_LOG_PATH`: Voller Pfad zum ASA Logfile
 - `ARK_RULES_PATH`: Standard `rules.json`
+- `ARK_DB_PATH`: SQLite-Datei für persistente Stats (z. B. `ark_stats.db`)
 - `POLL_INTERVAL_SECONDS`: z. B. `1.5`
 - `BURST_TOP_ITEMS`: Anzahl Top-Items im Sammel-Embed (z. B. `5`)
 - `BURST_MAX_BUFFER_SIZE`: Sofort-Flush bei sehr großem Burst (z. B. `250`)
+- `LEADERBOARD_POST_INTERVAL_SECONDS`: Auto-Post-Intervall (Default `21600` = 6h)
 
 ## Start
 
+Python-Environment pro neuer Shell starten:
+
+```powershell
+.\.venv\Scripts\activate
+```
+
+Danach Bot starten:
+
 ```powershell
 python bot.py
+```
+
+## SQLite Initialisierung
+
+Die DB wird automatisch beim ersten Bot-Start erzeugt und initialisiert.
+
+```powershell
+python bot.py
+```
+
+Optional prüfen, ob die DB-Datei existiert:
+
+```powershell
+dir ark_stats.db
+```
+
+Optional Tabellen prüfen (wenn `sqlite3` installiert ist):
+
+```powershell
+sqlite3 ark_stats.db ".tables"
 ```
 
 ## Bot-Rechte in Discord
@@ -63,6 +96,13 @@ Empfohlen:
 - Send Messages
 - Embed Links
 - Read Message History
+
+## Leaderboard Commands
+
+- `/leaderboard dino_kills`
+- `/leaderboard player_kills`
+- `/leaderboard dino_tames`
+- `/leaderboard all`
 
 ## Regeln anpassen (`rules.json`)
 
