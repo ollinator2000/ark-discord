@@ -9,6 +9,7 @@ Bot für **ARK: Survival Ascended PvPvE**, der dein Gamelog live parst und die w
 - Eye-Candy Ausgabe mit Emoji, Farben, Feldern, Timestamp
 - Regeln anpassbar über `rules.json` (ohne Code-Änderung)
 - Duplicate-Schutz für wiederholte Zeilen
+- Anti-Flood: Burst-Events werden in Sammel-Embeds gebündelt
 
 ## Voraussetzungen
 
@@ -45,6 +46,8 @@ copy .env.example .env
 - `ARK_LOG_PATH`: Voller Pfad zum ASA Logfile
 - `ARK_RULES_PATH`: Standard `rules.json`
 - `POLL_INTERVAL_SECONDS`: z. B. `1.5`
+- `BURST_TOP_ITEMS`: Anzahl Top-Items im Sammel-Embed (z. B. `5`)
+- `BURST_MAX_BUFFER_SIZE`: Sofort-Flush bei sehr großem Burst (z. B. `250`)
 
 ## Start
 
@@ -65,6 +68,11 @@ Empfohlen:
 
 Die Erkennung läuft vollständig über Regex-Regeln.
 Jede Regel kann Title, Description, Farben und Felder definieren.
+Für Anti-Flood kannst du pro Regel zusätzlich setzen:
+
+- `event_class`: `high`, `normal` oder `burst`
+- `aggregation_window_seconds`: Sammelfenster für `burst` (z. B. `30`)
+- `aggregate_key`: Gruppierung im Sammel-Embed (z. B. `{structure}`)
 
 Beispielstruktur:
 
@@ -107,4 +115,3 @@ Variante B: NSSM (Non-Sucking Service Manager) als Windows-Service.
 - `rules.json`: Event-Regeln
 - `.env.example`: Konfig-Vorlage
 - `requirements.txt`: Python-Abhängigkeiten
-

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,6 +25,9 @@ logger = logging.getLogger("ark-log-bot")
 class ParsedEvent:
     rule_name: str
     key: str
+    event_class: str
+    aggregate_key: str
+    aggregation_window_seconds: float
     title: str
     description: str
     color: int
@@ -67,6 +71,9 @@ class RuleEngine:
                     "emoji": rule.get("emoji", "📌"),
                     "fields": rule.get("fields", []),
                     "cooldown_seconds": float(rule.get("cooldown_seconds", 0)),
+                    "event_class": str(rule.get("event_class", "normal")).lower(),
+                    "aggregate_key": rule.get("aggregate_key", "{description}"),
+                    "aggregation_window_seconds": float(rule.get("aggregation_window_seconds", 0)),
                 }
             )
 
@@ -84,6 +91,7 @@ class RuleEngine:
 
             description = self._safe_format(rule["description"], context)
             title = self._safe_format(rule["title"], context)
+            aggregate_key = self._safe_format(rule["aggregate_key"], {**context, "description": description})
 
             fields: list[tuple[str, str]] = []
             for field in rule["fields"]:
@@ -98,6 +106,9 @@ class RuleEngine:
             return ParsedEvent(
                 rule_name=rule["name"],
                 key=event_key,
+                event_class=rule["event_class"],
+                aggregate_key=aggregate_key,
+                aggregation_window_seconds=rule["aggregation_window_seconds"],
                 title=title,
                 description=description,
                 color=rule["color"],
@@ -156,6 +167,8 @@ class ArkLogBot(discord.Client):
         rule_engine: RuleEngine,
         tail: LogTail,
         poll_interval: float,
+        burst_top_items: int,
+        burst_max_buffer_size: int,
     ):
         intents = discord.Intents.none()
         super().__init__(intents=intents)
@@ -163,8 +176,13 @@ class ArkLogBot(discord.Client):
         self.rule_engine = rule_engine
         self.tail = tail
         self.poll_interval = poll_interval
+        self.burst_top_items = burst_top_items
+        self.burst_max_buffer_size = burst_max_buffer_size
         self.recent_events = deque(maxlen=200)
         self.last_sent_by_rule: dict[str, float] = {}
+        self.pending_burst_events: dict[str, list[ParsedEvent]] = {}
+        self.pending_burst_started_ts: dict[str, float] = {}
+        self.pending_burst_window_seconds: dict[str, float] = {}
         self.bg_task: asyncio.Task | None = None
 
     async def on_ready(self) -> None:
@@ -208,24 +226,99 @@ class ArkLogBot(discord.Client):
                     if event is None:
                         continue
 
-                    if event.key in self.recent_events:
+                    if event.event_class == "burst":
+                        self._queue_burst_event(event)
                         continue
 
-                    now_ts = datetime.now(timezone.utc).timestamp()
-                    last_sent_ts = self.last_sent_by_rule.get(event.rule_name, 0.0)
-                    if event.cooldown_seconds > 0 and (now_ts - last_sent_ts) < event.cooldown_seconds:
-                        continue
+                    await self._send_immediate_event(channel, event)
 
-                    self.recent_events.append(event.key)
-                    self.last_sent_by_rule[event.rule_name] = now_ts
-
-                    embed = self._build_embed(event)
-                    await channel.send(embed=embed)
+                await self._flush_due_burst_events(channel)
 
                 await asyncio.sleep(self.poll_interval)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Fehler in Watch-Loop: %s", exc)
                 await asyncio.sleep(max(self.poll_interval, 2.0))
+
+    async def _send_immediate_event(self, channel: discord.TextChannel, event: ParsedEvent) -> None:
+        if event.key in self.recent_events:
+            return
+
+        now_ts = datetime.now(timezone.utc).timestamp()
+        last_sent_ts = self.last_sent_by_rule.get(event.rule_name, 0.0)
+        if event.cooldown_seconds > 0 and (now_ts - last_sent_ts) < event.cooldown_seconds:
+            return
+
+        self.recent_events.append(event.key)
+        self.last_sent_by_rule[event.rule_name] = now_ts
+        embed = self._build_embed(event)
+        await channel.send(embed=embed)
+
+    def _queue_burst_event(self, event: ParsedEvent) -> None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if event.rule_name not in self.pending_burst_events:
+            self.pending_burst_events[event.rule_name] = []
+            self.pending_burst_started_ts[event.rule_name] = now_ts
+            self.pending_burst_window_seconds[event.rule_name] = (
+                event.aggregation_window_seconds if event.aggregation_window_seconds > 0 else 30.0
+            )
+
+        self.pending_burst_events[event.rule_name].append(event)
+
+    async def _flush_due_burst_events(self, channel: discord.TextChannel) -> None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        due_rules: list[str] = []
+        for rule_name, started_ts in self.pending_burst_started_ts.items():
+            window = self.pending_burst_window_seconds.get(rule_name, 30.0)
+            if (now_ts - started_ts) >= window:
+                due_rules.append(rule_name)
+
+        for rule_name in due_rules:
+            events = self.pending_burst_events.pop(rule_name, [])
+            started_ts = self.pending_burst_started_ts.pop(rule_name, now_ts)
+            self.pending_burst_window_seconds.pop(rule_name, None)
+            if not events:
+                continue
+            await self._send_burst_summary(channel, rule_name, events, started_ts, now_ts)
+
+        for rule_name, events in list(self.pending_burst_events.items()):
+            if len(events) < self.burst_max_buffer_size:
+                continue
+            started_ts = self.pending_burst_started_ts.pop(rule_name, now_ts)
+            self.pending_burst_events.pop(rule_name, None)
+            self.pending_burst_window_seconds.pop(rule_name, None)
+            await self._send_burst_summary(channel, rule_name, events, started_ts, now_ts)
+
+    async def _send_burst_summary(
+        self,
+        channel: discord.TextChannel,
+        rule_name: str,
+        events: list[ParsedEvent],
+        started_ts: float,
+        ended_ts: float,
+    ) -> None:
+        first = events[0]
+        counts = Counter(event.aggregate_key for event in events)
+        top_items = counts.most_common(max(1, self.burst_top_items))
+        top_lines = "\n".join(f"{name} x{count}" for name, count in top_items)
+
+        start_dt = datetime.fromtimestamp(started_ts, tz=timezone.utc)
+        end_dt = datetime.fromtimestamp(ended_ts, tz=timezone.utc)
+        window_seconds = int(max(1, ended_ts - started_ts))
+
+        embed = discord.Embed(
+            title=f"{first.emoji} {first.title} (Burst Summary)",
+            description=f"{len(events)} Events in {window_seconds}s",
+            color=first.color,
+            timestamp=end_dt,
+        )
+        embed.add_field(name="Top Items", value=top_lines[:1024] if top_lines else "-", inline=False)
+        embed.add_field(
+            name="Zeitraum (UTC)",
+            value=f"{start_dt.strftime('%H:%M:%S')} - {end_dt.strftime('%H:%M:%S')}",
+            inline=False,
+        )
+        embed.set_footer(text=f"ARK Ascended PvPvE Event Feed | {rule_name}")
+        await channel.send(embed=embed)
 
     def _build_embed(self, event: ParsedEvent) -> discord.Embed:
         embed = discord.Embed(
@@ -256,6 +349,8 @@ def main() -> None:
     log_path = Path(load_required_env("ARK_LOG_PATH"))
     rules_path = Path(os.getenv("ARK_RULES_PATH", "rules.json"))
     poll_interval = float(os.getenv("POLL_INTERVAL_SECONDS", "1.5"))
+    burst_top_items = int(os.getenv("BURST_TOP_ITEMS", "5"))
+    burst_max_buffer_size = int(os.getenv("BURST_MAX_BUFFER_SIZE", "250"))
 
     rule_engine = RuleEngine(rules_path=rules_path)
     tail = LogTail(path=log_path)
@@ -265,6 +360,8 @@ def main() -> None:
         rule_engine=rule_engine,
         tail=tail,
         poll_interval=poll_interval,
+        burst_top_items=burst_top_items,
+        burst_max_buffer_size=burst_max_buffer_size,
     )
 
     bot.run(token)
