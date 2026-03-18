@@ -137,19 +137,70 @@ class RuleEngine:
 
 class LogTail:
     def __init__(self, path: Path):
-        self.path = path
+        self.configured_path = path
+        self.path = self._resolve_current_file()
         self.position = 0
+        self._active_file_key: tuple[int, int] | None = None
+        self._active_path: Path | None = None
+        if self.path is not None:
+            try:
+                st = self.path.stat()
+                self._active_path = self.path
+                self._active_file_key = (st.st_dev, st.st_ino)
+            except OSError:
+                self.path = None
+
+    def _resolve_current_file(self) -> Path | None:
+        if self.configured_path.exists():
+            return self.configured_path
+
+        parent = self.configured_path.parent
+        filename = self.configured_path.name
+        if not parent.exists() or not parent.is_dir():
+            return None
+
+        stem = self.configured_path.stem
+        if stem:
+            candidates = sorted(
+                parent.glob(f"{stem}*.log"),
+                key=lambda p: p.stat().st_mtime if p.exists() else 0,
+            )
+            return candidates[-1] if candidates else None
+
+        files = sorted(parent.glob("*.log"), key=lambda p: p.stat().st_mtime if p.exists() else 0)
+        return files[-1] if files else None
 
     def read_new_lines(self) -> list[str]:
-        if not self.path.exists():
+        current = self._resolve_current_file()
+        if current is None:
+            if self._active_path is not None:
+                logger.warning("Kein ARK Logfile gefunden fuer: %s", self.configured_path)
+                self._active_path = None
+                self._active_file_key = None
             return []
 
-        current_size = self.path.stat().st_size
+        key: tuple[int, int] | None = None
+        try:
+            st = current.stat()
+            key = (st.st_dev, st.st_ino)
+        except OSError:
+            return []
+
+        if self._active_path is None or key != self._active_file_key:
+            self._active_path = current
+            self._active_file_key = key
+            self.position = 0
+            logger.info("Log-Source gewechselt auf %s", current)
+
+        if self._active_path is None:
+            return []
+
+        current_size = current.stat().st_size
         if current_size < self.position:
             self.position = 0
 
         lines: list[str] = []
-        with self.path.open("r", encoding="utf-8", errors="replace") as f:
+        with current.open("r", encoding="utf-8", errors="replace") as f:
             f.seek(self.position)
             chunk = f.read()
             self.position = f.tell()
