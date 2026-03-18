@@ -142,6 +142,7 @@ class LogTail:
         self.position = 0
         self._active_file_key: tuple[int, int] | None = None
         self._active_path: Path | None = None
+        self._last_active_log_report = 0.0
         if self.path is not None:
             try:
                 st = self.path.stat()
@@ -149,6 +150,17 @@ class LogTail:
                 self._active_file_key = (st.st_dev, st.st_ino)
             except OSError:
                 self.path = None
+
+    def _log_active_file(self) -> None:
+        if self._active_path is None:
+            return
+
+        now = datetime.now(timezone.utc).timestamp()
+        if (now - self._last_active_log_report) < 60:
+            return
+
+        logger.info("Aktives Logfile: %s", self._active_path)
+        self._last_active_log_report = now
 
     def _resolve_current_file(self) -> Path | None:
         if self.configured_path.exists():
@@ -191,6 +203,8 @@ class LogTail:
             self._active_file_key = key
             self.position = 0
             logger.info("Log-Source gewechselt auf %s", current)
+        else:
+            self._log_active_file()
 
         if self._active_path is None:
             return []
