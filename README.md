@@ -162,6 +162,32 @@ Empfohlen:
 - `/leaderboard dino_tames`
 - `/leaderboard all`
 
+### Leaderboard nutzen
+
+So geht es Schritt für Schritt:
+
+1. Bot auf Discord starten und sicherstellen, dass der Slash-Command-Sync durchgelaufen ist.
+2. In den Channel klicken, in dem der Bot schreibt.
+3. Eingabe:
+   - `/leaderboard dino_kills`
+   - `/leaderboard player_kills`
+   - `/leaderboard dino_tames`
+   - `/leaderboard all`
+4. Der Bot postet direkt das passende Embed mit Top-5-Werten.
+
+Mögliche Slash-Command Antworten:
+
+- Einzelcommand: exakt 1 Embed
+- `all`: bis zu 3 Embeds (für Dino Kills, Player Kills, Dino Tames)
+
+Empfohlene Rechte für Slash-Commands:
+
+- `Send Messages`
+- `Embed Links`
+- `Use Slash Commands`
+
+Die Rechte sind in der Invite-URL meist enthalten oder in Rollen-Berechtigungen hinterlegt.
+
 ## Regeln anpassen (`rules.json`)
 
 Die Erkennung läuft vollständig über Regex-Regeln.
