@@ -1,4 +1,4 @@
-# ARK Ascended Discord Gamelog Bot (Windows 10)
+# ARK Ascended Discord Gamelog Bot (Windows 10 / Ubuntu)
 
 Bot für **ARK: Survival Ascended PvPvE**, der dein Gamelog live parst und die wichtigsten Events als optisch aufbereitete Discord-Embeds in einen Channel schreibt.
 
@@ -21,6 +21,8 @@ Bot für **ARK: Survival Ascended PvPvE**, der dein Gamelog live parst und die w
 - Discord Bot Token + Zugriff auf Ziel-Channel
 
 ## Installation
+
+### Windows 10
 
 1. Projektordner öffnen.
 2. Virtuelle Umgebung erstellen:
@@ -54,9 +56,46 @@ copy .env.example .env
 - `BURST_MAX_BUFFER_SIZE`: Sofort-Flush bei sehr großem Burst (z. B. `250`)
 - `LEADERBOARD_POST_INTERVAL_SECONDS`: Auto-Post-Intervall (Default `21600` = 6h)
 
+### Ubuntu / Linux
+
+1. Systempakete installieren:
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip
+```
+
+2. Projekt klonen und in den Ordner wechseln:
+
+```bash
+git clone https://github.com/ollinator2000/ark-discord.git
+cd ark-discord
+```
+
+3. Virtuelle Umgebung erstellen:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+4. Abhängigkeiten installieren:
+
+```bash
+pip install -r requirements.txt
+```
+
+5. Konfiguration anlegen:
+
+```bash
+cp .env.example .env
+```
+
+6. `.env` anpassen (siehe Liste im Windows-Teil).
+
 ## Start
 
-Python-Environment pro neuer Shell starten:
+Python-Environment pro neuer Shell starten (Windows):
 
 ```powershell
 .\.venv\Scripts\activate
@@ -65,6 +104,13 @@ Python-Environment pro neuer Shell starten:
 Danach Bot starten:
 
 ```powershell
+python bot.py
+```
+
+Linux Start:
+
+```bash
+source .venv/bin/activate
 python bot.py
 ```
 
@@ -82,9 +128,21 @@ Optional prüfen, ob die DB-Datei existiert:
 dir ark_stats.db
 ```
 
+Linux:
+
+```bash
+ls -lh ark_stats.db
+```
+
 Optional Tabellen prüfen (wenn `sqlite3` installiert ist):
 
 ```powershell
+sqlite3 ark_stats.db ".tables"
+```
+
+Linux:
+
+```bash
 sqlite3 ark_stats.db ".tables"
 ```
 
