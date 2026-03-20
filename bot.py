@@ -182,6 +182,25 @@ class LogTail:
     def _is_log_file(path: Path) -> bool:
         return path.is_file() and path.suffix.lower() == ".log"
 
+    @staticmethod
+    def _file_key(path: Path) -> tuple[int, int] | None:
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        return st.st_dev, st.st_ino
+
+    def _configured_path_rotated(self) -> bool:
+        if self._active_path is None or self._active_file_key is None:
+            return False
+
+        configured_key = self._file_key(self.configured_path)
+        if configured_key is None:
+            return False
+        if self._active_path != self.configured_path:
+            return False
+        return configured_key != self._active_file_key
+
     def _candidate_files(self) -> list[Path]:
         candidates: list[Path] = []
         if self.configured_path.exists():
@@ -191,22 +210,19 @@ class LogTail:
         if not parent.exists() or not parent.is_dir():
             return candidates
 
-        all_logs = [path for path in parent.glob("*.log") if path.is_file()]
-        if self._path_prefixes:
-            preferred = [
-                path for path in all_logs if any(path.name.startswith(prefix) for prefix in self._path_prefixes)
-            ]
-            if preferred:
-                candidates.extend(preferred)
-            elif candidates:
-                # keep configured file if it exists; ignore unmatched logs
-                pass
-            else:
-                candidates.extend(all_logs)
+        base_name = self.configured_path.name
+        if base_name:
+            all_logs = parent.glob(f"{base_name}*")
         else:
-            candidates.extend(all_logs)
+            all_logs = parent.glob("*.log")
 
-        deduped = {str(path.resolve()): path for path in candidates if self._is_log_file(path)}
+        if not base_name and self._path_prefixes:
+            preferred: list[Path] = []
+            for prefix in self._path_prefixes:
+                preferred.extend(parent.glob(f"{prefix}*"))
+            all_logs = preferred
+
+        deduped = {str(path.resolve()): path for path in all_logs if path.is_file()}
         return sorted(deduped.values(), key=lambda p: (p.stat().st_mtime_ns, p.name))
 
     def _resolve_current_file(self, allow_stale_active: bool = True) -> Path | None:
@@ -216,10 +232,19 @@ class LogTail:
 
         active_path = getattr(self, "_active_path", None)
         active_key = getattr(self, "_active_file_key", None)
+
+        if allow_stale_active and self._configured_path_rotated():
+            logger.warning(
+                "Ark Logfile wurde gedreht (Inode-Wechsel): %s",
+                self.configured_path,
+            )
+            return self.configured_path
+
         if (
             allow_stale_active
             and active_path is not None
             and active_path in candidates
+            and self._file_key(active_path) == active_key
             and self._is_file_active(active_path)
         ):
             return active_path
