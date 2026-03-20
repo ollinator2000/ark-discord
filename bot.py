@@ -140,9 +140,12 @@ class LogTail:
         self.configured_path = path
         self.path = self._resolve_current_file()
         self.position = 0
+        self._silent_poll_count = 0
+        self._max_silent_polls_before_switch = 12
         self._active_file_key: tuple[int, int] | None = None
         self._active_path: Path | None = None
         self._last_active_log_report = 0.0
+        self._path_prefixes = self._build_prefixes(self.configured_path.stem)
         if self.path is not None:
             try:
                 st = self.path.stat()
@@ -162,25 +165,90 @@ class LogTail:
         logger.info("Aktives Logfile: %s", self._active_path)
         self._last_active_log_report = now
 
-    def _resolve_current_file(self) -> Path | None:
+    @staticmethod
+    def _build_prefixes(stem: str) -> list[str]:
+        prefixes = []
+        if not stem:
+            return prefixes
+
+        prefixes.append(stem)
+        for sep in ("-", "_"):
+            head = stem.split(sep, 1)[0]
+            if head and head not in prefixes:
+                prefixes.append(head)
+        return prefixes
+
+    @staticmethod
+    def _is_log_file(path: Path) -> bool:
+        return path.is_file() and path.suffix.lower() == ".log"
+
+    def _candidate_files(self) -> list[Path]:
+        candidates: list[Path] = []
         if self.configured_path.exists():
-            return self.configured_path
+            candidates.append(self.configured_path)
 
         parent = self.configured_path.parent
-        filename = self.configured_path.name
         if not parent.exists() or not parent.is_dir():
+            return candidates
+
+        all_logs = [path for path in parent.glob("*.log") if path.is_file()]
+        if self._path_prefixes:
+            preferred = [
+                path for path in all_logs if any(path.name.startswith(prefix) for prefix in self._path_prefixes)
+            ]
+            if preferred:
+                candidates.extend(preferred)
+            elif candidates:
+                # keep configured file if it exists; ignore unmatched logs
+                pass
+            else:
+                candidates.extend(all_logs)
+        else:
+            candidates.extend(all_logs)
+
+        deduped = {str(path.resolve()): path for path in candidates if self._is_log_file(path)}
+        return sorted(deduped.values(), key=lambda p: (p.stat().st_mtime_ns, p.name))
+
+    def _resolve_current_file(self, allow_stale_active: bool = True) -> Path | None:
+        candidates = self._candidate_files()
+        if not candidates:
             return None
 
-        stem = self.configured_path.stem
-        if stem:
-            candidates = sorted(
-                parent.glob(f"{stem}*.log"),
-                key=lambda p: p.stat().st_mtime if p.exists() else 0,
-            )
-            return candidates[-1] if candidates else None
+        if (
+            allow_stale_active
+            and self._active_path is not None
+            and self._active_path in candidates
+            and self._is_file_active(self._active_path)
+        ):
+            return self._active_path
 
-        files = sorted(parent.glob("*.log"), key=lambda p: p.stat().st_mtime if p.exists() else 0)
-        return files[-1] if files else None
+        return candidates[-1]
+
+    @staticmethod
+    def _is_file_active(path: Path) -> bool:
+        try:
+            age_seconds = datetime.now(timezone.utc).timestamp() - path.stat().st_mtime
+        except OSError:
+            return False
+
+        return age_seconds < 45.0
+
+    def _read_from_path(self, path: Path) -> tuple[list[str], int]:
+        lines: list[str] = []
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            f.seek(self.position)
+            chunk = f.read()
+            new_position = f.tell()
+
+        if not chunk:
+            return lines, new_position
+
+        for line in chunk.splitlines():
+            cleaned = line.strip()
+            if cleaned:
+                lines.append(cleaned)
+
+        return lines, new_position
 
     def read_new_lines(self) -> list[str]:
         current = self._resolve_current_file()
@@ -201,6 +269,7 @@ class LogTail:
         if self._active_path is None or key != self._active_file_key:
             self._active_path = current
             self._active_file_key = key
+            self._silent_poll_count = 0
             self.position = 0
             logger.info("Log-Source gewechselt auf %s", current)
         else:
@@ -213,20 +282,39 @@ class LogTail:
         if current_size < self.position:
             self.position = 0
 
-        lines: list[str] = []
-        with current.open("r", encoding="utf-8", errors="replace") as f:
-            f.seek(self.position)
-            chunk = f.read()
-            self.position = f.tell()
+        lines, new_position = self._read_from_path(current)
+        self.position = new_position
 
-        if not chunk:
+        if not lines:
+            self._silent_poll_count += 1
+            if self._silent_poll_count < self._max_silent_polls_before_switch:
+                return []
+
+            fresh = self._resolve_current_file(allow_stale_active=False)
+            if fresh is None or fresh == current:
+                return []
+
+            try:
+                fresh_stat = fresh.stat()
+            except OSError:
+                return []
+            fresh_key = (fresh_stat.st_dev, fresh_stat.st_ino)
+            if fresh_key == key:
+                return []
+
+            self._active_path = fresh
+            self._active_file_key = fresh_key
+            self._silent_poll_count = 0
+            self.position = 0
+            logger.warning(
+                "Log-Quelle wurde still nach Rotation vermutet. Wechsel auf neue Datei: %s (alt: %s)",
+                fresh,
+                current,
+            )
+            lines, self.position = self._read_from_path(fresh)
             return lines
 
-        for line in chunk.splitlines():
-            cleaned = line.strip()
-            if cleaned:
-                lines.append(cleaned)
-
+        self._silent_poll_count = 0
         return lines
 
 
