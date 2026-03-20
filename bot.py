@@ -139,13 +139,13 @@ class LogTail:
     def __init__(self, path: Path):
         self.configured_path = path
         self._path_prefixes = self._build_prefixes(self.configured_path.stem)
-        self.path = self._resolve_current_file()
-        self.position = 0
-        self._silent_poll_count = 0
-        self._max_silent_polls_before_switch = 12
         self._active_file_key: tuple[int, int] | None = None
         self._active_path: Path | None = None
         self._last_active_log_report = 0.0
+        self.position = 0
+        self._silent_poll_count = 0
+        self._max_silent_polls_before_switch = 12
+        self.path = self._resolve_current_file()
         if self.path is not None:
             try:
                 st = self.path.stat()
@@ -214,13 +214,15 @@ class LogTail:
         if not candidates:
             return None
 
+        active_path = getattr(self, "_active_path", None)
+        active_key = getattr(self, "_active_file_key", None)
         if (
             allow_stale_active
-            and self._active_path is not None
-            and self._active_path in candidates
-            and self._is_file_active(self._active_path)
+            and active_path is not None
+            and active_path in candidates
+            and self._is_file_active(active_path)
         ):
-            return self._active_path
+            return active_path
 
         return candidates[-1]
 
