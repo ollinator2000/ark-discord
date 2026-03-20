@@ -55,6 +55,11 @@ copy .env.example .env
 - `BURST_TOP_ITEMS`: Anzahl Top-Items im Sammel-Embed (z. B. `5`)
 - `BURST_MAX_BUFFER_SIZE`: Sofort-Flush bei sehr großem Burst (z. B. `250`)
 - `LEADERBOARD_POST_INTERVAL_SECONDS`: Auto-Post-Intervall (Default `21600` = 6h)
+- `ARK_LOG_FILE`: Dateipfad für Bot-Logs (Default `ark_discord_bot.log`)
+- `ARK_LOG_LEVEL`: Log-Level für Konsole (z. B. `INFO`, `DEBUG`, `WARNING`)
+- `ARK_LOG_FILE_LEVEL`: Log-Level für Datei (Standard wie `ARK_LOG_LEVEL`)
+- `ARK_LOG_DISCORD_MESSAGES`: Discord-Nachrichten in Datei-Log schreiben (`true`/`false`, Default `true`)
+- `ARK_DISCORD_MESSAGE_DEBUG`: Alias für explizite Discord-Nachrichten-Logs (`true`/`false`, Default `true`)
 
 ### Ubuntu / Linux
 

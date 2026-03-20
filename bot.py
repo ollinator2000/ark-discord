@@ -15,11 +15,57 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
 logger = logging.getLogger("ark-log-bot")
+DISCORD_MESSAGE_LOG_MARKER = "DISCORD_MESSAGE"
+
+
+def _parse_log_level(value: str, default_level: int) -> int:
+    level = value.strip().upper()
+    if not level:
+        return default_level
+    return getattr(logging, level, default_level)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on", "y"}
+
+
+def configure_logging() -> None:
+    file_path = os.getenv("ARK_LOG_FILE", "ark_discord_bot.log").strip() or "ark_discord_bot.log"
+    file_level = _parse_log_level(os.getenv("ARK_LOG_FILE_LEVEL", os.getenv("ARK_LOG_LEVEL", "INFO")), logging.INFO)
+    stream_level = _parse_log_level(os.getenv("ARK_LOG_LEVEL", "INFO"), logging.INFO)
+
+    handlers: list[logging.Handler] = []
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(stream_level)
+    stream_handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"),
+    )
+    handlers.append(stream_handler)
+
+    if file_path:
+        log_dir = Path(file_path).parent
+        if str(log_dir) not in {"", "."}:
+            log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(file_path, encoding="utf-8")
+        file_handler.setLevel(file_level)
+        file_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s | %(levelname)s | %(name)s | %(pathname)s:%(lineno)d | %(message)s"
+            ),
+        )
+        handlers.append(file_handler)
+
+    logger.setLevel(min(stream_level, file_level))
+    logger.handlers = []
+    for handler in handlers:
+        logger.addHandler(handler)
+    logger.propagate = False
+    logger.info("Logging initialisiert. Datei=%s, level=stream(%s), file(%s)", file_path, stream_level, file_level)
 
 
 def utc_now_iso() -> str:
@@ -179,10 +225,6 @@ class LogTail:
         return prefixes
 
     @staticmethod
-    def _is_log_file(path: Path) -> bool:
-        return path.is_file() and path.suffix.lower() == ".log"
-
-    @staticmethod
     def _file_key(path: Path) -> tuple[int, int] | None:
         try:
             st = path.stat()
@@ -223,7 +265,9 @@ class LogTail:
             all_logs = preferred
 
         deduped = {str(path.resolve()): path for path in all_logs if path.is_file()}
-        return sorted(deduped.values(), key=lambda p: (p.stat().st_mtime_ns, p.name))
+        files = sorted(deduped.values(), key=lambda p: (p.stat().st_mtime_ns, p.name))
+        logger.debug("Log-Kandidaten (%s): %s", len(files), [p.name for p in files])
+        return files
 
     def _resolve_current_file(self, allow_stale_active: bool = True) -> Path | None:
         candidates = self._candidate_files()
@@ -262,13 +306,17 @@ class LogTail:
 
     def _read_from_path(self, path: Path) -> tuple[list[str], int]:
         lines: list[str] = []
+        start_position = self.position
         with path.open("r", encoding="utf-8", errors="replace") as f:
             f.seek(self.position)
             chunk = f.read()
             new_position = f.tell()
 
         if not chunk:
+            logger.debug("Keine neuen Zeilen in %s (Position %s)", path, start_position)
             return lines, new_position
+
+        logger.debug("Gelesen %s Bytes aus %s (von Pos %s auf %s)", len(chunk), path, start_position, new_position)
 
         for line in chunk.splitlines():
             cleaned = line.strip()
@@ -348,6 +396,7 @@ class LogTail:
 class StatsStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        logger.info("Initialisiere SQLite DB: %s", self.db_path)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.execute("PRAGMA journal_mode=WAL;")
         self.conn.execute("PRAGMA synchronous=NORMAL;")
@@ -355,8 +404,10 @@ class StatsStore:
         self.conn.row_factory = sqlite3.Row
         self._lock = asyncio.Lock()
         self._init_schema()
+        logger.info("SQLite DB bereit: %s", self.db_path)
 
     def _init_schema(self) -> None:
+        logger.debug("Erstelle/prüfe Datenbankschema: %s", self.db_path)
         cur = self.conn.cursor()
         cur.executescript(
             """
@@ -431,14 +482,26 @@ class StatsStore:
             """
         )
         self.conn.commit()
+        logger.debug("Schema check abgeschlossen: %s", self.db_path)
+
+    def _log_sql(self, statement: str, params: tuple[Any, ...] | list[Any] | None = None) -> None:
+        if params is None:
+            logger.debug("SQL: %s", statement)
+        else:
+            logger.debug("SQL: %s | params=%s", statement, params)
 
     async def record_player_seen(self, player_name: str) -> int | None:
         normalized = player_name.strip()
         if not normalized:
             return None
+        logger.debug("Persist Player Seen: %s", normalized)
 
         async with self._lock:
             now = utc_now_iso()
+            self._log_sql(
+                "INSERT INTO players ... ON CONFLICT",
+                (normalized, now, now),
+            )
             self.conn.execute(
                 """
                 INSERT INTO players (player_name, first_seen_at, last_seen_at)
@@ -455,6 +518,7 @@ class StatsStore:
         normalized_tribe = tribe_name.strip()
         if not normalized_player or not normalized_tribe:
             return
+        logger.debug("Persist join tribe: player=%s tribe=%s", normalized_player, normalized_tribe)
 
         async with self._lock:
             now = utc_now_iso()
@@ -496,6 +560,7 @@ class StatsStore:
         dino = dino_type.strip()
         if not killer or not dino:
             return
+        logger.debug("Persist dino kill: killer=%s dino=%s", killer, dino)
 
         async with self._lock:
             now = utc_now_iso()
@@ -528,6 +593,7 @@ class StatsStore:
         tribe = tribe_name.strip()
         if not player or not dino:
             return
+        logger.debug("Persist dino tame: player=%s dino=%s level=%s tribe=%s", player, dino, dino_level, tribe)
 
         async with self._lock:
             now = utc_now_iso()
@@ -578,6 +644,7 @@ class StatsStore:
         victim = victim_name.strip()
         if not killer:
             return
+        logger.debug("Persist player kill: killer=%s victim=%s", killer, victim)
 
         async with self._lock:
             now = utc_now_iso()
@@ -616,6 +683,7 @@ class StatsStore:
         column = metric_column_map.get(metric)
         if column is None:
             return []
+        logger.debug("Fetch leaderboard metric=%s limit=%s", metric, limit)
 
         async with self._lock:
             cur = self.conn.execute(
@@ -695,6 +763,8 @@ class ArkLogBot(discord.Client):
         self.pending_burst_events: dict[str, list[ParsedEvent]] = {}
         self.pending_burst_started_ts: dict[str, float] = {}
         self.pending_burst_window_seconds: dict[str, float] = {}
+        self.discord_message_debug = _env_bool("ARK_DISCORD_MESSAGE_DEBUG", True)
+        self.log_discord_payloads = _env_bool("ARK_LOG_DISCORD_MESSAGES", True)
 
         self.bg_task: asyncio.Task | None = None
         self.leaderboard_task: asyncio.Task | None = None
@@ -729,9 +799,11 @@ class ArkLogBot(discord.Client):
             embeds = await self._build_leaderboard_embeds(board.value, requested_by="On-Demand")
             if not embeds:
                 await interaction.response.send_message("Keine Daten fuer dieses Leaderboard vorhanden.")
+                logger.warning("On-Demand Leaderboard ohne Daten: board=%s user=%s", board.value, interaction.user)
                 return
 
             await interaction.response.send_message(embeds=embeds)
+            logger.info("On-Demand Leaderboard gesendet: board=%s user=%s", board.value, interaction.user)
 
         self._commands_registered = True
 
@@ -775,10 +847,13 @@ class ArkLogBot(discord.Client):
             return
 
         logger.info("Starte Log-Watcher fuer %s", self.tail.path)
+        logger.info("Watchdog startet mit Poll-Intervall=%ss", self.poll_interval)
 
         while not self.is_closed():
             try:
+                tick_start = datetime.now(timezone.utc).timestamp()
                 new_lines = self.tail.read_new_lines()
+                logger.debug("Watch-Tick: %s neue Zeilen", len(new_lines))
                 for line in new_lines:
                     event = self.rule_engine.parse_line(line)
                     if event is None:
@@ -794,6 +869,9 @@ class ArkLogBot(discord.Client):
 
                 await self._flush_due_burst_events(channel)
                 await asyncio.sleep(self.poll_interval)
+                tick_end = datetime.now(timezone.utc).timestamp()
+                loop_delay = tick_end - tick_start
+                logger.debug("Watch-Tick fertig in %.3fs", loop_delay)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Fehler in Watch-Loop: %s", exc)
                 await asyncio.sleep(max(self.poll_interval, 2.0))
@@ -805,6 +883,7 @@ class ArkLogBot(discord.Client):
             return
 
         while not self.is_closed():
+            logger.info("Nächster geplante Leaderboard-Post in %ss", self.leaderboard_interval_seconds)
             await asyncio.sleep(self.leaderboard_interval_seconds)
             try:
                 channel = await self._resolve_channel()
@@ -813,8 +892,22 @@ class ArkLogBot(discord.Client):
                 embeds = await self._build_leaderboard_embeds("all", requested_by="Automatisch alle 6h")
                 if embeds:
                     await channel.send(embeds=embeds)
+                    if self.discord_message_debug:
+                        logger.info("[%s] channel=%s payload=%s", DISCORD_MESSAGE_LOG_MARKER, channel.id, "leaderboard(all)")
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Fehler beim automatischen Leaderboard-Post: %s", exc)
+
+    def _log_discord_payload(self, channel: discord.TextChannel, payload: str) -> None:
+        if not self.log_discord_payloads:
+            return
+        logger.info("[%s] channel=%s payload=%s", DISCORD_MESSAGE_LOG_MARKER, channel.id, payload)
+
+    def _disambiguate_message_payload(self, embed: discord.Embed, channel: discord.TextChannel, event: ParsedEvent) -> str:
+        fields = ", ".join(f"{field.name}={field.value}" for field in embed.fields)
+        return (
+            f"channel={channel.id} title={embed.title} description={embed.description} fields=[{fields}] "
+            f"footer={embed.footer.text} ts={embed.timestamp.isoformat() if embed.timestamp else ''} rule={event.rule_name}"
+        )
 
     async def _persist_event(self, event: ParsedEvent) -> None:
         ctx = event.context
@@ -873,6 +966,8 @@ class ArkLogBot(discord.Client):
 
         embed = self._build_embed(event)
         await channel.send(embed=embed)
+        if self.discord_message_debug:
+            self._log_discord_payload(channel, self._disambiguate_message_payload(embed, channel, event))
 
     def _queue_burst_event(self, event: ParsedEvent) -> None:
         now_ts = datetime.now(timezone.utc).timestamp()
@@ -940,6 +1035,8 @@ class ArkLogBot(discord.Client):
         )
         embed.set_footer(text=f"ARK Ascended PvPvE Event Feed | {rule_name}")
         await channel.send(embed=embed)
+        if self.discord_message_debug:
+            self._log_discord_payload(channel, self._disambiguate_message_payload(embed, channel, first))
 
     async def _build_leaderboard_embeds(self, board: str, requested_by: str) -> list[discord.Embed]:
         kinds: list[str]
@@ -975,6 +1072,13 @@ class ArkLogBot(discord.Client):
                 timestamp=datetime.now(timezone.utc),
             )
             embed.set_footer(text=f"ARK Leaderboard | {requested_by}")
+            if self.discord_message_debug:
+                logger.debug(
+                    "Leaderboard Embed vorbereitet board=%s requested_by=%s player_count=%s",
+                    board,
+                    requested_by,
+                    len(rows),
+                )
             embeds.append(embed)
 
         return embeds
@@ -1001,6 +1105,7 @@ def load_required_env(name: str) -> str:
 
 def main() -> None:
     load_dotenv()
+    configure_logging()
 
     token = load_required_env("DISCORD_TOKEN")
     channel_id = int(load_required_env("DISCORD_CHANNEL_ID"))
