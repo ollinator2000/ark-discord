@@ -112,6 +112,58 @@ Danach Bot starten:
 python bot.py
 ```
 
+## Logging
+
+Der Bot erzeugt zwei Logging-Ziele:
+
+- Konsolenausgabe (Stdout)
+- Datei-Log (standardmäßig `ark_discord_bot.log`)
+
+### Welche Logs gibt es?
+
+- `START`: Bot-Start, Konfiguration, geöffnete Dateien, Task- und Loop-Starts
+- `LOGFILE`: Log-Tailing-Verhalten  
+  - gefundene Kandidat-Dateien  
+  - aktives Logfile  
+  - Dateiswitch bei Rotation/Inode-Wechsel  
+  - leseleere Ticks / Wechselversuche
+- `EVENT`: erkannte Events, Burst-Queues, Cooldowns, Scheduler-Ticks
+- `DISCORD`: gesendete Discord-Nachrichten (Payload inkl. Channel, Titel/Description/Fields/Footer)  
+  - diese Logs werden mit Marker `DISCORD_MESSAGE` gekennzeichnet
+- `DB`: SQLite-Initialisierung, Persistenz-Operationen, Queries
+- `ERROR`: Exceptions inklusive Stacktrace
+
+### Wie konfiguriere ich Logging?
+
+In der `.env` sind die Schalter:
+
+- `ARK_LOG_FILE` (Default: `ark_discord_bot.log`)
+  - Dateipfad für das Bot-Logfile
+- `ARK_LOG_LEVEL` (Default: `INFO`)
+  - Konsole: `DEBUG` / `INFO` / `WARNING` / `ERROR`
+- `ARK_LOG_FILE_LEVEL` (Default wie `ARK_LOG_LEVEL`)
+  - Dateilog: `DEBUG` / `INFO` / `WARNING` / `ERROR`
+- `ARK_LOG_DISCORD_MESSAGES` (Default: `true`)
+  - `true` = Discord-Nachrichten auch ins Bot-Log schreiben
+- `ARK_DISCORD_MESSAGE_DEBUG` (Default: `true`)
+  - zusätzliches Schaltfeld für Event-Post-Logging (zusätzlich zu `ARK_LOG_DISCORD_MESSAGES`)
+  - für vollständige Discord-Nachrichtenlogs müssen **beide** Flags `true` sein
+
+Beispiel:
+
+```bash
+export ARK_LOG_LEVEL=INFO
+export ARK_LOG_FILE_LEVEL=DEBUG
+export ARK_LOG_DISCORD_MESSAGES=true
+export ARK_DISCORD_MESSAGE_DEBUG=true
+```
+
+### Logfile live beobachten
+
+```bash
+tail -f ark_discord_bot.log
+```
+
 Linux Start:
 
 ```bash
