@@ -138,6 +138,7 @@ class RuleEngine:
 class LogTail:
     def __init__(self, path: Path):
         self.configured_path = path
+        self._path_prefixes = self._build_prefixes(self.configured_path.stem)
         self.path = self._resolve_current_file()
         self.position = 0
         self._silent_poll_count = 0
@@ -145,7 +146,6 @@ class LogTail:
         self._active_file_key: tuple[int, int] | None = None
         self._active_path: Path | None = None
         self._last_active_log_report = 0.0
-        self._path_prefixes = self._build_prefixes(self.configured_path.stem)
         if self.path is not None:
             try:
                 st = self.path.stat()
