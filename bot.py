@@ -182,11 +182,13 @@ class RuleEngine:
 
 
 class LogTail:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, hard_reopen_interval_seconds: float = 900.0):
         self.configured_path = path
         self._path_prefixes = self._build_prefixes(self.configured_path.stem)
         self._active_file_key: tuple[int, int] | None = None
         self._active_path: Path | None = None
+        self._hard_reopen_interval_seconds = max(0.0, float(hard_reopen_interval_seconds))
+        self._last_hard_reopen_ts = datetime.now(timezone.utc).timestamp()
         self._last_active_log_report = 0.0
         self.position = 0
         self._silent_poll_count = 0
@@ -199,6 +201,62 @@ class LogTail:
                 self._active_file_key = (st.st_dev, st.st_ino)
             except OSError:
                 self.path = None
+
+    def _can_hard_reopen(self) -> bool:
+        if self._hard_reopen_interval_seconds <= 0:
+            return False
+        return (datetime.now(timezone.utc).timestamp() - self._last_hard_reopen_ts) >= self._hard_reopen_interval_seconds
+
+    def _maybe_hard_reopen(self) -> None:
+        if not self._can_hard_reopen():
+            return
+
+        logger.info(
+            "Erzwungener Logfile-Rescan (Intervall %.0fs)",
+            self._hard_reopen_interval_seconds,
+        )
+        self._last_hard_reopen_ts = datetime.now(timezone.utc).timestamp()
+
+        fresh = self._resolve_current_file(allow_stale_active=False)
+        if fresh is None:
+            logger.debug("Kein Logfile bei erzwungenem Rescan gefunden.")
+            self._active_path = None
+            self._active_file_key = None
+            self.position = 0
+            return
+
+        try:
+            st = fresh.stat()
+            fresh_key = (st.st_dev, st.st_ino)
+        except OSError:
+            return
+
+        if self._active_path is not None and fresh == self._active_path and fresh_key == self._active_file_key:
+            try:
+                current_size = fresh.stat().st_size
+            except OSError:
+                return
+            if current_size < self.position:
+                logger.warning(
+                    "Aktives Logfile nach Reopen verkuerzt, Position wird nachgezogen: %s",
+                    fresh,
+                )
+                self.position = current_size
+            else:
+                logger.debug("Logfile unveraendert bei Reopen, Position bleibt auf %s", self.position)
+            self._silent_poll_count = 0
+            return
+
+        old = self._active_path
+        self._active_path = fresh
+        self._active_file_key = fresh_key
+        self.position = 0
+        self._silent_poll_count = 0
+        logger.warning(
+            "Logfile-Wechsel durch erzwungenen Reopen: %s -> %s",
+            old,
+            fresh,
+        )
 
     def _log_active_file(self) -> None:
         if self._active_path is None:
@@ -326,6 +384,8 @@ class LogTail:
         return lines, new_position
 
     def read_new_lines(self) -> list[str]:
+        self._maybe_hard_reopen()
+
         current = self._resolve_current_file()
         if current is None:
             if self._active_path is not None:
@@ -1114,12 +1174,13 @@ def main() -> None:
     db_path = Path(os.getenv("ARK_DB_PATH", "ark_stats.db"))
 
     poll_interval = float(os.getenv("POLL_INTERVAL_SECONDS", "1.5"))
+    hard_reopen_interval_seconds = float(os.getenv("ARK_LOG_HARD_REOPEN_INTERVAL_SECONDS", "900"))
     burst_top_items = int(os.getenv("BURST_TOP_ITEMS", "5"))
     burst_max_buffer_size = int(os.getenv("BURST_MAX_BUFFER_SIZE", "250"))
     leaderboard_interval_seconds = int(os.getenv("LEADERBOARD_POST_INTERVAL_SECONDS", "21600"))
 
     rule_engine = RuleEngine(rules_path=rules_path)
-    tail = LogTail(path=log_path)
+    tail = LogTail(path=log_path, hard_reopen_interval_seconds=hard_reopen_interval_seconds)
     stats_store = StatsStore(db_path=db_path)
 
     bot = ArkLogBot(
