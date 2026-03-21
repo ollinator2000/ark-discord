@@ -56,6 +56,7 @@ copy .env.example .env
 - `BURST_TOP_ITEMS`: Anzahl Top-Items im Sammel-Embed (z. B. `5`)
 - `BURST_MAX_BUFFER_SIZE`: Sofort-Flush bei sehr großem Burst (z. B. `250`)
 - `LEADERBOARD_POST_INTERVAL_SECONDS`: Auto-Post-Intervall (Default `21600` = 6h)
+- `ARK_DISCORD_POSTING_ENABLED`: `true`/`false` (Default `true`) zum temporären Deaktivieren aller Discord-Posts
 - `ARK_LOG_FILE`: Dateipfad für Bot-Logs (Default `ark_discord_bot.log`)
 - `ARK_LOG_LEVEL`: Log-Level für Konsole (z. B. `INFO`, `DEBUG`, `WARNING`)
 - `ARK_LOG_FILE_LEVEL`: Log-Level für Datei (Standard wie `ARK_LOG_LEVEL`)
@@ -147,6 +148,8 @@ In der `.env` sind die Schalter:
   - Dateilog: `DEBUG` / `INFO` / `WARNING` / `ERROR`
 - `ARK_LOG_HARD_REOPEN_INTERVAL_SECONDS` (Default: `900`)
   - Intervall in Sekunden, nach dem der Logtail zwangsweise neu verifiziert wird (`0` = aus)
+- `ARK_DISCORD_POSTING_ENABLED` (Default: `true`)
+  - `false` = keine Discord-Posts (inklusive Event-/Leaderboards), nur Bot-Log + Persistierung
 - `ARK_LOG_DISCORD_MESSAGES` (Default: `true`)
   - `true` = Discord-Nachrichten auch ins Bot-Log schreiben
 - `ARK_DISCORD_MESSAGE_DEBUG` (Default: `true`)
@@ -159,6 +162,7 @@ Beispiel:
 export ARK_LOG_LEVEL=INFO
 export ARK_LOG_FILE_LEVEL=DEBUG
 export ARK_LOG_HARD_REOPEN_INTERVAL_SECONDS=900
+export ARK_DISCORD_POSTING_ENABLED=true
 export ARK_LOG_DISCORD_MESSAGES=true
 export ARK_DISCORD_MESSAGE_DEBUG=true
 ```

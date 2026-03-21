@@ -806,6 +806,7 @@ class ArkLogBot(discord.Client):
         burst_top_items: int,
         burst_max_buffer_size: int,
         leaderboard_interval_seconds: int,
+        discord_posting_enabled: bool,
     ):
         intents = discord.Intents.none()
         super().__init__(intents=intents)
@@ -817,6 +818,7 @@ class ArkLogBot(discord.Client):
         self.burst_top_items = burst_top_items
         self.burst_max_buffer_size = burst_max_buffer_size
         self.leaderboard_interval_seconds = leaderboard_interval_seconds
+        self.discord_posting_enabled = discord_posting_enabled
 
         self.recent_events = deque(maxlen=200)
         self.last_sent_by_rule: dict[str, float] = {}
@@ -852,6 +854,13 @@ class ArkLogBot(discord.Client):
             ]
         )
         async def leaderboard(interaction: discord.Interaction, board: app_commands.Choice[str]) -> None:
+            if not self.discord_posting_enabled:
+                await interaction.response.send_message(
+                    "Discord-Posting ist deaktiviert. Aktuelle Werte werden nur im Bot-Log protokolliert.",
+                    ephemeral=True,
+                )
+                return
+
             if interaction.channel is None:
                 await interaction.response.send_message("Kein gueltiger Channel.", ephemeral=True)
                 return
@@ -902,9 +911,13 @@ class ArkLogBot(discord.Client):
 
     async def _watch_loop(self) -> None:
         await self.wait_until_ready()
-        channel = await self._resolve_channel()
-        if channel is None:
-            return
+        if self.discord_posting_enabled:
+            channel = await self._resolve_channel()
+            if channel is None:
+                return
+        else:
+            channel = None
+            logger.info("Discord-Posting deaktiviert. Events werden nur im Logfile verarbeitet.")
 
         logger.info("Starte Log-Watcher fuer %s", self.tail.path)
         logger.info("Watchdog startet mit Poll-Intervall=%ss", self.poll_interval)
@@ -921,13 +934,17 @@ class ArkLogBot(discord.Client):
 
                     await self._persist_event(event)
 
+                    if not self.discord_posting_enabled:
+                        continue
+
                     if event.event_class == "burst":
                         self._queue_burst_event(event)
                         continue
 
                     await self._send_immediate_event(channel, event)
 
-                await self._flush_due_burst_events(channel)
+                if self.discord_posting_enabled:
+                    await self._flush_due_burst_events(channel)
                 await asyncio.sleep(self.poll_interval)
                 tick_end = datetime.now(timezone.utc).timestamp()
                 loop_delay = tick_end - tick_start
@@ -938,6 +955,10 @@ class ArkLogBot(discord.Client):
 
     async def _leaderboard_loop(self) -> None:
         await self.wait_until_ready()
+        if not self.discord_posting_enabled:
+            logger.info("Discord-Posting deaktiviert. Automatisches Leaderboard ist pausiert.")
+            return
+
         if self.leaderboard_interval_seconds <= 0:
             logger.info("Automatisches Leaderboard deaktiviert (Intervall <= 0).")
             return
@@ -1013,6 +1034,9 @@ class ArkLogBot(discord.Client):
         return True
 
     async def _send_immediate_event(self, channel: discord.TextChannel, event: ParsedEvent) -> None:
+        if not self.discord_posting_enabled:
+            return
+
         if event.key in self.recent_events:
             return
 
@@ -1072,6 +1096,9 @@ class ArkLogBot(discord.Client):
         started_ts: float,
         ended_ts: float,
     ) -> None:
+        if not self.discord_posting_enabled:
+            return
+
         first = events[0]
         counts = Counter(event.aggregate_key for event in events)
         top_items = counts.most_common(max(1, self.burst_top_items))
@@ -1178,6 +1205,7 @@ def main() -> None:
     burst_top_items = int(os.getenv("BURST_TOP_ITEMS", "5"))
     burst_max_buffer_size = int(os.getenv("BURST_MAX_BUFFER_SIZE", "250"))
     leaderboard_interval_seconds = int(os.getenv("LEADERBOARD_POST_INTERVAL_SECONDS", "21600"))
+    discord_posting_enabled = _env_bool("ARK_DISCORD_POSTING_ENABLED", True)
 
     rule_engine = RuleEngine(rules_path=rules_path)
     tail = LogTail(path=log_path, hard_reopen_interval_seconds=hard_reopen_interval_seconds)
@@ -1192,6 +1220,7 @@ def main() -> None:
         burst_top_items=burst_top_items,
         burst_max_buffer_size=burst_max_buffer_size,
         leaderboard_interval_seconds=leaderboard_interval_seconds,
+        discord_posting_enabled=discord_posting_enabled,
     )
 
     bot.run(token)
