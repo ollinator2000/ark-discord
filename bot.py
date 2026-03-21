@@ -154,7 +154,7 @@ class RuleEngine:
                 if value and value != "-":
                     fields.append((name, value))
 
-            event_key = f"{rule['name']}|{description}"
+            event_key = f"{rule['name']}|{line.strip()}"
             return ParsedEvent(
                 rule_name=rule["name"],
                 key=event_key,
