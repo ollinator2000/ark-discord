@@ -328,6 +328,18 @@ class LogTail:
         return files
 
     def _resolve_current_file(self, allow_stale_active: bool = True) -> Path | None:
+        # Primary source is always the configured live file path (ShooterGame.log).
+        # Only fall back to candidate discovery when that file is temporarily missing.
+        if self.configured_path.exists():
+            active_path = getattr(self, "_active_path", None)
+            if active_path is not None and active_path != self.configured_path:
+                logger.warning(
+                    "Wechsel zur konfigurierten Live-Logdatei: %s (statt Archivdatei %s)",
+                    self.configured_path,
+                    active_path,
+                )
+            return self.configured_path
+
         candidates = self._candidate_files()
         if not candidates:
             return None
@@ -351,7 +363,13 @@ class LogTail:
         ):
             return active_path
 
-        return candidates[-1]
+        selected = candidates[-1]
+        if selected != self.configured_path:
+            logger.debug(
+                "Konfiguriertes Logfile fehlt temporär, nutze Kandidat: %s",
+                selected,
+            )
+        return selected
 
     @staticmethod
     def _is_file_active(path: Path) -> bool:
