@@ -49,6 +49,7 @@ copy .env.example .env
 
 - `DISCORD_TOKEN`: Bot Token
 - `DISCORD_CHANNEL_ID`: Discord Textchannel ID
+- `DISCORD_GUILD_ID`: Optional für sofortige Slash-Command-Synchronisierung in genau einem Server
 - `ARK_LOG_PATH`: Voller Pfad zum ASA Logfile
 - `ARK_WILD_KILLS_FEATURE_ENABLED`: `true`/`false` (Default `false`) aktiviert CSV-Ingest fuer Wild-Dino-Kills
 - `ARK_WILD_KILLS_CSV_PATH`: Voller Pfad zur `wild_kills.csv` (kann auf anderem Verzeichnis liegen als `ShooterGame.log`)
@@ -73,6 +74,11 @@ ARK_LOG_PATH=/home/ark/ShooterGame/Saved/Logs/ShooterGame.log
 ARK_WILD_KILLS_FEATURE_ENABLED=true
 ARK_WILD_KILLS_CSV_PATH=/srv/ark/plugins/WildDinoKill/wild_kills.csv
 ```
+
+Hinweis zu Slash-Commands:
+
+- ohne `DISCORD_GUILD_ID` werden Commands global synchronisiert (kann verzögert sichtbar sein)
+- mit `DISCORD_GUILD_ID` werden Commands guild-spezifisch synchronisiert (normalerweise sofort nach Bot-Neustart sichtbar)
 
 ## WildDinoKill CSV
 

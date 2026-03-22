@@ -1036,8 +1036,16 @@ class ArkLogBot(discord.Client):
 
     async def setup_hook(self) -> None:
         self._register_commands()
+        guild_id_raw = os.getenv("DISCORD_GUILD_ID", "").strip()
+        if guild_id_raw:
+            guild = discord.Object(id=int(guild_id_raw))
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            logger.info("Slash Commands fuer Guild %s synchronisiert.", guild_id_raw)
+            return
+
         await self.tree.sync()
-        logger.info("Slash Commands synchronisiert.")
+        logger.info("Slash Commands global synchronisiert.")
 
     def _register_commands(self) -> None:
         if self._commands_registered:
