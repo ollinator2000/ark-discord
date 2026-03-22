@@ -237,6 +237,7 @@ Empfohlen:
 - `/leaderboard player_kills`
 - `/leaderboard dino_tames`
 - `/leaderboard all`
+- `/lastkill <playername>`
 
 ### Leaderboard nutzen
 
@@ -249,7 +250,9 @@ So geht es Schritt für Schritt:
    - `/leaderboard player_kills`
    - `/leaderboard dino_tames`
    - `/leaderboard all`
+   - `/lastkill Ollinator`
 4. Der Bot postet direkt das passende Embed mit Top-5-Werten.
+5. Bei `/lastkill <playername>` postet der Bot den zuletzt gespeicherten Dino-Kill dieses Spielers (inkl. Zeit und Quelle).
 
 Mögliche Slash-Command Antworten:
 

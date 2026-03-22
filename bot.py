@@ -495,7 +495,7 @@ class WildKillCsvTail:
                 break
         return token.strip().replace("_", " ")
 
-    def read_new_kills(self) -> tuple[list[tuple[str, str]], int]:
+    def read_new_kills(self) -> tuple[list[tuple[str, str, str | None]], int]:
         now_ts = datetime.now(timezone.utc).timestamp()
         if not self.path.exists():
             if (now_ts - self._last_missing_log_ts) >= 60.0:
@@ -521,7 +521,7 @@ class WildKillCsvTail:
         if not chunk:
             return [], new_position
 
-        kills: list[tuple[str, str]] = []
+        kills: list[tuple[str, str, str | None]] = []
         for raw_line in chunk.splitlines():
             line = raw_line.strip()
             if not line:
@@ -543,10 +543,11 @@ class WildKillCsvTail:
                 continue
 
             killer_name = row[6].strip()
+            event_time_text = row[0].strip() if row else None
             dino_name = self._extract_dino_name(row[1])
             if not killer_name or not dino_name:
                 continue
-            kills.append((killer_name, dino_name))
+            kills.append((killer_name, dino_name, event_time_text))
 
         logger.debug(
             "WildKill CSV gelesen: %s Bytes von %s bis %s, kills=%s",
@@ -641,6 +642,16 @@ class StatsStore:
                 FOREIGN KEY (victim_player_id) REFERENCES players(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS dino_kill_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                killer_player_id INTEGER NOT NULL,
+                dino_type TEXT NOT NULL,
+                event_time_text TEXT,
+                source TEXT,
+                recorded_at TEXT NOT NULL,
+                FOREIGN KEY (killer_player_id) REFERENCES players(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS ingestion_offsets (
                 source_key TEXT PRIMARY KEY,
                 position INTEGER NOT NULL,
@@ -651,6 +662,7 @@ class StatsStore:
             CREATE INDEX IF NOT EXISTS idx_tribes_name ON tribes(tribe_name);
             CREATE INDEX IF NOT EXISTS idx_dino_tame_player ON dino_tame_events(player_id);
             CREATE INDEX IF NOT EXISTS idx_player_kill_killer ON player_kill_events(killer_player_id);
+            CREATE INDEX IF NOT EXISTS idx_dino_kill_player ON dino_kill_events(killer_player_id);
             """
         )
         self.conn.commit()
@@ -727,7 +739,13 @@ class StatsStore:
             )
             self.conn.commit()
 
-    async def record_dino_kill(self, killer_name: str, dino_type: str) -> None:
+    async def record_dino_kill(
+        self,
+        killer_name: str,
+        dino_type: str,
+        event_time_text: str | None = None,
+        source: str | None = None,
+    ) -> None:
         killer = killer_name.strip()
         dino = dino_type.strip()
         if not killer or not dino:
@@ -756,6 +774,13 @@ class StatsStore:
                 DO UPDATE SET kills_count = kills_count + 1, updated_at=excluded.updated_at
                 """,
                 (killer_id, dino, now),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO dino_kill_events (killer_player_id, dino_type, event_time_text, source, recorded_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (killer_id, dino, event_time_text, source, now),
             )
             self.conn.commit()
 
@@ -898,6 +923,33 @@ class StatsStore:
             )
             self.conn.commit()
 
+    async def fetch_last_dino_kill_for_player(self, player_name: str) -> tuple[str, str, str, str] | None:
+        normalized = player_name.strip()
+        if not normalized:
+            return None
+
+        async with self._lock:
+            cur = self.conn.execute(
+                """
+                SELECT p.player_name, e.dino_type, COALESCE(e.event_time_text, e.recorded_at) AS event_time, COALESCE(e.source, 'unknown') AS source
+                FROM dino_kill_events e
+                JOIN players p ON p.id = e.killer_player_id
+                WHERE p.player_name = ?
+                ORDER BY e.id DESC
+                LIMIT 1
+                """,
+                (normalized,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return (
+                str(row["player_name"]),
+                str(row["dino_type"]),
+                str(row["event_time"]),
+                str(row["source"]),
+            )
+
     def _ensure_player_locked(self, player_name: str, now_iso: str) -> int:
         self.conn.execute(
             """
@@ -1022,6 +1074,31 @@ class ArkLogBot(discord.Client):
             await interaction.response.send_message(embeds=embeds)
             logger.info("On-Demand Leaderboard gesendet: board=%s user=%s", board.value, interaction.user)
 
+        @self.tree.command(name="lastkill", description="Zeigt den letzten Dino-Kill eines Spielers")
+        @app_commands.describe(player="Exakter Spielername")
+        async def lastkill(interaction: discord.Interaction, player: str) -> None:
+            result = await self.stats_store.fetch_last_dino_kill_for_player(player)
+            if result is None:
+                await interaction.response.send_message(
+                    f"Kein Dino-Kill fuer Spieler `{player}` gefunden.",
+                    ephemeral=True,
+                )
+                return
+
+            player_name, dino_name, event_time, source = result
+            embed = discord.Embed(
+                title="Letzter Dino-Kill",
+                description=f"**{player_name}** hat zuletzt **{dino_name}** getoetet.",
+                color=0x3498DB,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="Zeit", value=event_time, inline=True)
+            embed.add_field(name="Quelle", value=source, inline=True)
+            embed.set_footer(text="ARK Leaderboard | Last Kill")
+
+            await interaction.response.send_message(embed=embed)
+            logger.info("Lastkill abgefragt: player=%s user=%s", player_name, interaction.user)
+
         self._commands_registered = True
 
     async def on_ready(self) -> None:
@@ -1105,8 +1182,13 @@ class ArkLogBot(discord.Client):
                     csv_kills, new_csv_position = self.wild_kill_csv_tail.read_new_kills()
                     if csv_kills:
                         logger.info("WildKill CSV neue Kills: %s", len(csv_kills))
-                    for killer_name, dino_name in csv_kills:
-                        await self.stats_store.record_dino_kill(killer_name=killer_name, dino_type=dino_name)
+                    for killer_name, dino_name, event_time_text in csv_kills:
+                        await self.stats_store.record_dino_kill(
+                            killer_name=killer_name,
+                            dino_type=dino_name,
+                            event_time_text=event_time_text,
+                            source="wild_kills_csv",
+                        )
                     if new_csv_position != previous_csv_position:
                         await self.stats_store.set_ingestion_offset(self._wild_kill_source_key, new_csv_position)
 
@@ -1179,7 +1261,12 @@ class ArkLogBot(discord.Client):
         if event.rule_name == "pve_dino_killed":
             killer = ctx.get("killer", "")
             dino = ctx.get("dino", "")
-            await self.stats_store.record_dino_kill(killer_name=killer, dino_type=dino)
+            await self.stats_store.record_dino_kill(
+                killer_name=killer,
+                dino_type=dino,
+                event_time_text=ctx.get("logtime", ""),
+                source="shootergame_log",
+            )
             return
 
         if event.rule_name == "player_death_by":
