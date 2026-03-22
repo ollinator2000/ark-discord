@@ -116,17 +116,27 @@
       ]
     },
     {
-      "name": "online_service_difference",
-      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]Difference Detected: (?P<left>\\d+) : OnlineService (?P<right>\\d+) : OnlineService$",
-      "title": "OnlineService Difference",
-      "description": "Difference Detected im OnlineService.",
-      "emoji": "🧩",
-      "color": 10181046,
-      "event_class": "normal",
-      "cooldown_seconds": 300,
+      "name": "server_started",
+      "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\].*(?i:server started|server is starting|server up and running).*$",
+      "title": "Server gestartet",
+      "description": "Der ARK Server wurde gestartet.",
+      "emoji": "✅",
+      "color": 3066993,
+      "event_class": "high",
       "fields": [
-        { "name": "Wert A", "value": "{left}" },
-        { "name": "Wert B", "value": "{right}" }
+        { "name": "Status", "value": "Server gestartet" }
+      ]
+    },
+    {
+      "name": "server_stopped",
+      "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\].*(?i:server stopped|server shutdown|server is shutting down).*$",
+      "title": "Server gestoppt",
+      "description": "Der ARK Server wurde gestoppt.",
+      "emoji": "🛑",
+      "color": 15158332,
+      "event_class": "high",
+      "fields": [
+        { "name": "Status", "value": "Server gestoppt" }
       ]
     }
   ]
