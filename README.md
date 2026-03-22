@@ -49,6 +49,8 @@ copy .env.example .env
 - `DISCORD_TOKEN`: Bot Token
 - `DISCORD_CHANNEL_ID`: Discord Textchannel ID
 - `ARK_LOG_PATH`: Voller Pfad zum ASA Logfile
+- `ARK_WILD_KILLS_FEATURE_ENABLED`: `true`/`false` (Default `false`) aktiviert CSV-Ingest fuer Wild-Dino-Kills
+- `ARK_WILD_KILLS_CSV_PATH`: Voller Pfad zur `wild_kills.csv` (kann auf anderem Verzeichnis liegen als `ShooterGame.log`)
 - `ARK_RULES_PATH`: Standard `rules.json`
 - `ARK_DB_PATH`: SQLite-Datei für persistente Stats (z. B. `ark_stats.db`)
 - `POLL_INTERVAL_SECONDS`: z. B. `1.5`
@@ -63,6 +65,14 @@ copy .env.example .env
 - `ARK_LOG_HARD_REOPEN_INTERVAL_SECONDS`: Intervall für den hart erzwungenen Logfile-Rescan (Default: `900`, `0` deaktiviert)
 - `ARK_LOG_DISCORD_MESSAGES`: Discord-Nachrichten in Datei-Log schreiben (`true`/`false`, Default `true`)
 - `ARK_DISCORD_MESSAGE_DEBUG`: Alias für explizite Discord-Nachrichten-Logs (`true`/`false`, Default `true`)
+
+Beispiel fuer getrennte Pfade:
+
+```env
+ARK_LOG_PATH=/home/ark/ShooterGame/Saved/Logs/ShooterGame.log
+ARK_WILD_KILLS_FEATURE_ENABLED=true
+ARK_WILD_KILLS_CSV_PATH=/srv/ark/plugins/WildDinoKill/wild_kills.csv
+```
 
 ### Ubuntu / Linux
 
