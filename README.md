@@ -11,6 +11,7 @@ Bot für **ARK: Survival Ascended PvPvE**, der dein Gamelog live parst und die w
 - Duplicate-Schutz für wiederholte Zeilen
 - Anti-Flood: Burst-Events werden in Sammel-Embeds gebündelt
 - Persistente Statistiken in SQLite (`ark_stats.db`)
+- Optionaler WildDinoKill CSV-Ingest (separater Pfad, getrennt vom ShooterGame-Log)
 - Leaderboards automatisch alle 6 Stunden
 - Leaderboards on-demand per Slash-Command `/leaderboard`
 
@@ -48,7 +49,10 @@ copy .env.example .env
 
 - `DISCORD_TOKEN`: Bot Token
 - `DISCORD_CHANNEL_ID`: Discord Textchannel ID
+- `DISCORD_GUILD_ID`: Optional für sofortige Slash-Command-Synchronisierung in genau einem Server
 - `ARK_LOG_PATH`: Voller Pfad zum ASA Logfile
+- `ARK_WILD_KILLS_FEATURE_ENABLED`: `true`/`false` (Default `false`) aktiviert CSV-Ingest fuer Wild-Dino-Kills
+- `ARK_WILD_KILLS_CSV_PATH`: Voller Pfad zur `wild_kills.csv` (kann auf anderem Verzeichnis liegen als `ShooterGame.log`)
 - `ARK_RULES_PATH`: Standard `rules.json`
 - `ARK_DB_PATH`: SQLite-Datei für persistente Stats (z. B. `ark_stats.db`)
 - `POLL_INTERVAL_SECONDS`: z. B. `1.5`
@@ -60,9 +64,33 @@ copy .env.example .env
 - `ARK_LOG_FILE`: Dateipfad für Bot-Logs (Default `ark_discord_bot.log`)
 - `ARK_LOG_LEVEL`: Log-Level für Konsole (z. B. `INFO`, `DEBUG`, `WARNING`)
 - `ARK_LOG_FILE_LEVEL`: Log-Level für Datei (Standard wie `ARK_LOG_LEVEL`)
-- `ARK_LOG_HARD_REOPEN_INTERVAL_SECONDS`: Intervall für den hart erzwungenen Logfile-Rescan (Default: `900`, `0` deaktiviert)
 - `ARK_LOG_DISCORD_MESSAGES`: Discord-Nachrichten in Datei-Log schreiben (`true`/`false`, Default `true`)
 - `ARK_DISCORD_MESSAGE_DEBUG`: Alias für explizite Discord-Nachrichten-Logs (`true`/`false`, Default `true`)
+
+Beispiel fuer getrennte Pfade:
+
+```env
+ARK_LOG_PATH=/home/ark/ShooterGame/Saved/Logs/ShooterGame.log
+ARK_WILD_KILLS_FEATURE_ENABLED=true
+ARK_WILD_KILLS_CSV_PATH=/srv/ark/plugins/WildDinoKill/wild_kills.csv
+```
+
+Hinweis zu Slash-Commands:
+
+- ohne `DISCORD_GUILD_ID` werden Commands global synchronisiert (kann verzögert sichtbar sein)
+- mit `DISCORD_GUILD_ID` werden Commands guild-spezifisch synchronisiert (normalerweise sofort nach Bot-Neustart sichtbar)
+
+## WildDinoKill CSV
+
+Wenn `ARK_WILD_KILLS_FEATURE_ENABLED=true` gesetzt ist, liest der Bot die Datei aus `ARK_WILD_KILLS_CSV_PATH` inkrementell ein.
+
+- CSV-Datei kann in einem komplett anderen Verzeichnis liegen als `ShooterGame.log`
+- pro Kill werden `killer_name` (Player) und `dino_blueprint` (Dino-Typ) verarbeitet
+- die Werte werden in SQLite mitgezählt und fließen in `dino_kills` Leaderboards ein
+- der Ingest ist restart-sicher: der Leseposition-Offset wird in SQLite gespeichert
+- wiederholte Header-Zeilen in der CSV werden ignoriert
+
+Aktuell sendet der CSV-Ingest keine separaten Live-Event-Embeds. Er schreibt in die Statistik, die für Leaderboards und `/lastkill` verwendet wird.
 
 ### Ubuntu / Linux
 
@@ -212,6 +240,13 @@ Linux:
 sqlite3 ark_stats.db ".tables"
 ```
 
+Relevante Tabellen für die neuen Funktionen:
+
+- `player_stats`: aggregierte Counter je Spieler
+- `player_dino_kills_by_type`: Dino-Kills pro Spieler und Dino-Typ
+- `dino_kill_events`: einzelne Dino-Kill-Events (Basis für `/lastkill`)
+- `ingestion_offsets`: Lesepositionen für CSV-Ingest (z. B. WildDinoKill)
+
 ## Bot-Rechte in Discord
 
 Empfohlen:
@@ -227,6 +262,7 @@ Empfohlen:
 - `/leaderboard player_kills`
 - `/leaderboard dino_tames`
 - `/leaderboard all`
+- `/lastkill <playername>`
 
 ### Leaderboard nutzen
 
@@ -239,12 +275,15 @@ So geht es Schritt für Schritt:
    - `/leaderboard player_kills`
    - `/leaderboard dino_tames`
    - `/leaderboard all`
+   - `/lastkill Ollinator`
 4. Der Bot postet direkt das passende Embed mit Top-5-Werten.
+5. Bei `/lastkill <playername>` postet der Bot den zuletzt gespeicherten Dino-Kill dieses Spielers (inkl. Zeit und Quelle).
 
 Mögliche Slash-Command Antworten:
 
 - Einzelcommand: exakt 1 Embed
 - `all`: bis zu 3 Embeds (für Dino Kills, Player Kills, Dino Tames)
+- `/lastkill`: 1 Embed mit letztem gespeicherten Dino-Kill (Spieler, Dino, Zeit, Quelle)
 
 Empfohlene Rechte für Slash-Commands:
 

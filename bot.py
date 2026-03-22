@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import json
 import logging
 import os
@@ -471,6 +472,94 @@ class LogTail:
         return lines
 
 
+class WildKillCsvTail:
+    def __init__(self, path: Path):
+        self.path = path
+        self.position = 0
+        self._last_missing_log_ts = 0.0
+
+    def set_position(self, position: int) -> None:
+        self.position = max(0, int(position))
+
+    @staticmethod
+    def _extract_dino_name(blueprint: str) -> str:
+        raw = blueprint.strip()
+        if not raw:
+            return ""
+
+        token = raw.rstrip("'").split("/")[-1]
+        token = token.split(".", 1)[0]
+        for suffix in ("_Character_BP_C", "_Character_BP", "_BP_C", "_BP"):
+            if token.endswith(suffix):
+                token = token[: -len(suffix)]
+                break
+        return token.strip().replace("_", " ")
+
+    def read_new_kills(self) -> tuple[list[tuple[str, str, str | None]], int]:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if not self.path.exists():
+            if (now_ts - self._last_missing_log_ts) >= 60.0:
+                logger.warning("WildKill CSV nicht gefunden: %s", self.path)
+                self._last_missing_log_ts = now_ts
+            return [], self.position
+
+        try:
+            file_size = self.path.stat().st_size
+        except OSError:
+            return [], self.position
+
+        if file_size < self.position:
+            logger.warning("WildKill CSV wurde gekuerzt/rotiert, starte neu ab Byte 0: %s", self.path)
+            self.position = 0
+
+        start_position = self.position
+        with self.path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+            f.seek(self.position)
+            chunk = f.read()
+            new_position = f.tell()
+
+        if not chunk:
+            return [], new_position
+
+        kills: list[tuple[str, str, str | None]] = []
+        for raw_line in chunk.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            try:
+                row = next(csv.reader([line]))
+            except Exception:
+                logger.warning("WildKill CSV Zeile konnte nicht geparst werden: %s", line)
+                continue
+
+            if not row:
+                continue
+            if row[0].strip().lower() == "timestamp_utc":
+                # Header-Zeilen koennen im laufenden Betrieb erneut auftauchen.
+                continue
+            if len(row) < 7:
+                logger.debug("WildKill CSV Zeile mit zu wenigen Spalten ignoriert: %s", row)
+                continue
+
+            killer_name = row[6].strip()
+            event_time_text = row[0].strip() if row else None
+            dino_name = self._extract_dino_name(row[1])
+            if not killer_name or not dino_name:
+                continue
+            kills.append((killer_name, dino_name, event_time_text))
+
+        logger.debug(
+            "WildKill CSV gelesen: %s Bytes von %s bis %s, kills=%s",
+            len(chunk),
+            start_position,
+            new_position,
+            len(kills),
+        )
+        self.position = new_position
+        return kills, new_position
+
+
 class StatsStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
@@ -553,10 +642,27 @@ class StatsStore:
                 FOREIGN KEY (victim_player_id) REFERENCES players(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS dino_kill_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                killer_player_id INTEGER NOT NULL,
+                dino_type TEXT NOT NULL,
+                event_time_text TEXT,
+                source TEXT,
+                recorded_at TEXT NOT NULL,
+                FOREIGN KEY (killer_player_id) REFERENCES players(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS ingestion_offsets (
+                source_key TEXT PRIMARY KEY,
+                position INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_players_name ON players(player_name);
             CREATE INDEX IF NOT EXISTS idx_tribes_name ON tribes(tribe_name);
             CREATE INDEX IF NOT EXISTS idx_dino_tame_player ON dino_tame_events(player_id);
             CREATE INDEX IF NOT EXISTS idx_player_kill_killer ON player_kill_events(killer_player_id);
+            CREATE INDEX IF NOT EXISTS idx_dino_kill_player ON dino_kill_events(killer_player_id);
             """
         )
         self.conn.commit()
@@ -633,7 +739,13 @@ class StatsStore:
             )
             self.conn.commit()
 
-    async def record_dino_kill(self, killer_name: str, dino_type: str) -> None:
+    async def record_dino_kill(
+        self,
+        killer_name: str,
+        dino_type: str,
+        event_time_text: str | None = None,
+        source: str | None = None,
+    ) -> None:
         killer = killer_name.strip()
         dino = dino_type.strip()
         if not killer or not dino:
@@ -662,6 +774,13 @@ class StatsStore:
                 DO UPDATE SET kills_count = kills_count + 1, updated_at=excluded.updated_at
                 """,
                 (killer_id, dino, now),
+            )
+            self.conn.execute(
+                """
+                INSERT INTO dino_kill_events (killer_player_id, dino_type, event_time_text, source, recorded_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (killer_id, dino, event_time_text, source, now),
             )
             self.conn.commit()
 
@@ -778,6 +897,59 @@ class StatsStore:
             rows = cur.fetchall()
             return [(str(row["player_name"]), int(row["score"])) for row in rows]
 
+    async def get_ingestion_offset(self, source_key: str) -> int:
+        async with self._lock:
+            cur = self.conn.execute(
+                "SELECT position FROM ingestion_offsets WHERE source_key = ?",
+                (source_key,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return 0
+            return max(0, int(row["position"]))
+
+    async def set_ingestion_offset(self, source_key: str, position: int) -> None:
+        async with self._lock:
+            now = utc_now_iso()
+            self.conn.execute(
+                """
+                INSERT INTO ingestion_offsets (source_key, position, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(source_key) DO UPDATE
+                SET position = excluded.position,
+                    updated_at = excluded.updated_at
+                """,
+                (source_key, max(0, int(position)), now),
+            )
+            self.conn.commit()
+
+    async def fetch_last_dino_kill_for_player(self, player_name: str) -> tuple[str, str, str, str] | None:
+        normalized = player_name.strip()
+        if not normalized:
+            return None
+
+        async with self._lock:
+            cur = self.conn.execute(
+                """
+                SELECT p.player_name, e.dino_type, COALESCE(e.event_time_text, e.recorded_at) AS event_time, COALESCE(e.source, 'unknown') AS source
+                FROM dino_kill_events e
+                JOIN players p ON p.id = e.killer_player_id
+                WHERE p.player_name = ?
+                ORDER BY e.id DESC
+                LIMIT 1
+                """,
+                (normalized,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return (
+                str(row["player_name"]),
+                str(row["dino_type"]),
+                str(row["event_time"]),
+                str(row["source"]),
+            )
+
     def _ensure_player_locked(self, player_name: str, now_iso: str) -> int:
         self.conn.execute(
             """
@@ -819,6 +991,8 @@ class ArkLogBot(discord.Client):
         channel_id: int,
         rule_engine: RuleEngine,
         tail: LogTail,
+        wild_kill_csv_tail: WildKillCsvTail | None,
+        wild_kill_feature_enabled: bool,
         stats_store: StatsStore,
         poll_interval: float,
         burst_top_items: int,
@@ -831,6 +1005,14 @@ class ArkLogBot(discord.Client):
         self.channel_id = channel_id
         self.rule_engine = rule_engine
         self.tail = tail
+        self.wild_kill_csv_tail = wild_kill_csv_tail
+        self.wild_kill_feature_enabled = wild_kill_feature_enabled and wild_kill_csv_tail is not None
+        self._wild_kill_source_key = (
+            f"wild_kills_csv:{self.wild_kill_csv_tail.path.resolve()}"
+            if self.wild_kill_csv_tail is not None
+            else ""
+        )
+        self._wild_kill_offset_loaded = False
         self.stats_store = stats_store
         self.poll_interval = poll_interval
         self.burst_top_items = burst_top_items
@@ -854,8 +1036,16 @@ class ArkLogBot(discord.Client):
 
     async def setup_hook(self) -> None:
         self._register_commands()
+        guild_id_raw = os.getenv("DISCORD_GUILD_ID", "").strip()
+        if guild_id_raw:
+            guild = discord.Object(id=int(guild_id_raw))
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            logger.info("Slash Commands fuer Guild %s synchronisiert.", guild_id_raw)
+            return
+
         await self.tree.sync()
-        logger.info("Slash Commands synchronisiert.")
+        logger.info("Slash Commands global synchronisiert.")
 
     def _register_commands(self) -> None:
         if self._commands_registered:
@@ -891,6 +1081,31 @@ class ArkLogBot(discord.Client):
 
             await interaction.response.send_message(embeds=embeds)
             logger.info("On-Demand Leaderboard gesendet: board=%s user=%s", board.value, interaction.user)
+
+        @self.tree.command(name="lastkill", description="Zeigt den letzten Dino-Kill eines Spielers")
+        @app_commands.describe(player="Exakter Spielername")
+        async def lastkill(interaction: discord.Interaction, player: str) -> None:
+            result = await self.stats_store.fetch_last_dino_kill_for_player(player)
+            if result is None:
+                await interaction.response.send_message(
+                    f"Kein Dino-Kill fuer Spieler `{player}` gefunden.",
+                    ephemeral=True,
+                )
+                return
+
+            player_name, dino_name, event_time, source = result
+            embed = discord.Embed(
+                title="Letzter Dino-Kill",
+                description=f"**{player_name}** hat zuletzt **{dino_name}** getoetet.",
+                color=0x3498DB,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="Zeit", value=event_time, inline=True)
+            embed.add_field(name="Quelle", value=source, inline=True)
+            embed.set_footer(text="ARK Leaderboard | Last Kill")
+
+            await interaction.response.send_message(embed=embed)
+            logger.info("Lastkill abgefragt: player=%s user=%s", player_name, interaction.user)
 
         self._commands_registered = True
 
@@ -938,6 +1153,15 @@ class ArkLogBot(discord.Client):
             logger.info("Discord-Posting deaktiviert. Events werden nur im Logfile verarbeitet.")
 
         logger.info("Starte Log-Watcher fuer %s", self.tail.path)
+        if self.wild_kill_feature_enabled and self.wild_kill_csv_tail is not None:
+            logger.info("WildKill CSV Ingest aktiv: %s", self.wild_kill_csv_tail.path)
+            if not self._wild_kill_offset_loaded:
+                offset = await self.stats_store.get_ingestion_offset(self._wild_kill_source_key)
+                self.wild_kill_csv_tail.set_position(offset)
+                self._wild_kill_offset_loaded = True
+                logger.info("WildKill CSV Start-Offset geladen: %s", offset)
+        else:
+            logger.info("WildKill CSV Ingest deaktiviert.")
         logger.info("Watchdog startet mit Poll-Intervall=%ss", self.poll_interval)
 
         while not self.is_closed():
@@ -960,6 +1184,21 @@ class ArkLogBot(discord.Client):
                         continue
 
                     await self._send_immediate_event(channel, event)
+
+                if self.wild_kill_feature_enabled and self.wild_kill_csv_tail is not None:
+                    previous_csv_position = self.wild_kill_csv_tail.position
+                    csv_kills, new_csv_position = self.wild_kill_csv_tail.read_new_kills()
+                    if csv_kills:
+                        logger.info("WildKill CSV neue Kills: %s", len(csv_kills))
+                    for killer_name, dino_name, event_time_text in csv_kills:
+                        await self.stats_store.record_dino_kill(
+                            killer_name=killer_name,
+                            dino_type=dino_name,
+                            event_time_text=event_time_text,
+                            source="wild_kills_csv",
+                        )
+                    if new_csv_position != previous_csv_position:
+                        await self.stats_store.set_ingestion_offset(self._wild_kill_source_key, new_csv_position)
 
                 if self.discord_posting_enabled:
                     await self._flush_due_burst_events(channel)
@@ -1030,7 +1269,12 @@ class ArkLogBot(discord.Client):
         if event.rule_name == "pve_dino_killed":
             killer = ctx.get("killer", "")
             dino = ctx.get("dino", "")
-            await self.stats_store.record_dino_kill(killer_name=killer, dino_type=dino)
+            await self.stats_store.record_dino_kill(
+                killer_name=killer,
+                dino_type=dino,
+                event_time_text=ctx.get("logtime", ""),
+                source="shootergame_log",
+            )
             return
 
         if event.rule_name == "player_death_by":
@@ -1215,6 +1459,7 @@ def main() -> None:
     token = load_required_env("DISCORD_TOKEN")
     channel_id = int(load_required_env("DISCORD_CHANNEL_ID"))
     log_path = Path(load_required_env("ARK_LOG_PATH"))
+    wild_kill_csv_path_raw = os.getenv("ARK_WILD_KILLS_CSV_PATH", "").strip()
     rules_path = Path(os.getenv("ARK_RULES_PATH", "rules.json"))
     db_path = Path(os.getenv("ARK_DB_PATH", "ark_stats.db"))
 
@@ -1224,15 +1469,23 @@ def main() -> None:
     burst_max_buffer_size = int(os.getenv("BURST_MAX_BUFFER_SIZE", "250"))
     leaderboard_interval_seconds = int(os.getenv("LEADERBOARD_POST_INTERVAL_SECONDS", "21600"))
     discord_posting_enabled = _env_bool("ARK_DISCORD_POSTING_ENABLED", True)
+    wild_kill_feature_enabled = _env_bool("ARK_WILD_KILLS_FEATURE_ENABLED", False)
 
     rule_engine = RuleEngine(rules_path=rules_path)
     tail = LogTail(path=log_path, hard_reopen_interval_seconds=hard_reopen_interval_seconds)
+    wild_kill_csv_tail: WildKillCsvTail | None = None
+    if wild_kill_feature_enabled and wild_kill_csv_path_raw:
+        wild_kill_csv_tail = WildKillCsvTail(path=Path(wild_kill_csv_path_raw))
+    elif wild_kill_feature_enabled:
+        logger.warning("WildKill Feature ist aktiviert, aber ARK_WILD_KILLS_CSV_PATH ist leer.")
     stats_store = StatsStore(db_path=db_path)
 
     bot = ArkLogBot(
         channel_id=channel_id,
         rule_engine=rule_engine,
         tail=tail,
+        wild_kill_csv_tail=wild_kill_csv_tail,
+        wild_kill_feature_enabled=wild_kill_feature_enabled,
         stats_store=stats_store,
         poll_interval=poll_interval,
         burst_top_items=burst_top_items,
