@@ -240,12 +240,50 @@ Linux:
 sqlite3 ark_stats.db ".tables"
 ```
 
-Relevante Tabellen für die neuen Funktionen:
+## Datenbankschema (SQLite)
 
-- `player_stats`: aggregierte Counter je Spieler
-- `player_dino_kills_by_type`: Dino-Kills pro Spieler und Dino-Typ
-- `dino_kill_events`: einzelne Dino-Kill-Events (Basis für `/lastkill`)
-- `ingestion_offsets`: Lesepositionen für CSV-Ingest (z. B. WildDinoKill)
+Die Datei `ark_stats.db` speichert folgende Daten:
+
+- Spieler-Stammdaten (Name, first/last seen)
+- Tribe-Stammdaten und Player-zu-Tribe Zuordnung
+- Aggregierte Stats für Leaderboards
+- Event-Historie (Dino-Tames, Player-Kills, Dino-Kills)
+- Ingestion-Offsets für CSV-Quellen (z. B. WildDinoKill)
+
+Tabellen im Detail:
+
+- `players`
+  - Zweck: eindeutige Spielerliste
+  - Wichtige Felder: `id`, `player_name` (UNIQUE, case-insensitive), `first_seen_at`, `last_seen_at`
+- `tribes`
+  - Zweck: eindeutige Tribeliste
+  - Wichtige Felder: `id`, `tribe_name` (UNIQUE, case-insensitive), `first_seen_at`, `last_seen_at`
+- `player_tribe_membership`
+  - Zweck: Zuordnung Spieler <-> Tribe
+  - Wichtige Felder: `player_id`, `tribe_id`, `last_seen_at`
+  - Primärschlüssel: `(player_id, tribe_id)`
+- `player_stats`
+  - Zweck: aggregierte Werte pro Spieler (Basis für Leaderboards)
+  - Wichtige Felder: `player_id` (PK), `dino_kills_total`, `player_kills_total`, `dino_tames_total`, `updated_at`
+- `player_dino_kills_by_type`
+  - Zweck: aggregierte Dino-Kills je Spieler und Dino-Typ
+  - Wichtige Felder: `player_id`, `dino_type`, `kills_count`, `updated_at`
+  - Primärschlüssel: `(player_id, dino_type)`
+- `dino_tame_events`
+  - Zweck: Einzel-Events für Tames
+  - Wichtige Felder: `id`, `player_id`, `tribe_id`, `dino_type`, `dino_level`, `event_time_text`, `recorded_at`
+- `player_kill_events`
+  - Zweck: Einzel-Events für Player-Kills
+  - Wichtige Felder: `id`, `killer_player_id`, `victim_name`, `victim_player_id`, `event_time_text`, `recorded_at`
+- `player_death_events`
+  - Zweck: Einzel-Events für Player-Deaths (auch ohne validen Player-Killer)
+  - Wichtige Felder: `id`, `victim_player_id`, `victim_name`, `killer_text`, `event_time_text`, `source_rule`, `recorded_at`
+- `dino_kill_events`
+  - Zweck: Einzel-Events für Dino-Kills (u. a. Basis für `/lastkill`)
+  - Wichtige Felder: `id`, `killer_player_id`, `dino_type`, `event_time_text`, `source`, `recorded_at`
+- `ingestion_offsets`
+  - Zweck: merkt, bis zu welcher Byte-Position externe Quellen bereits eingelesen wurden
+  - Wichtige Felder: `source_key` (PK), `position`, `updated_at`
 
 ## Bot-Rechte in Discord
 

@@ -642,6 +642,17 @@ class StatsStore:
                 FOREIGN KEY (victim_player_id) REFERENCES players(id) ON DELETE SET NULL
             );
 
+            CREATE TABLE IF NOT EXISTS player_death_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                victim_player_id INTEGER,
+                victim_name TEXT,
+                killer_text TEXT,
+                event_time_text TEXT,
+                source_rule TEXT NOT NULL,
+                recorded_at TEXT NOT NULL,
+                FOREIGN KEY (victim_player_id) REFERENCES players(id) ON DELETE SET NULL
+            );
+
             CREATE TABLE IF NOT EXISTS dino_kill_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 killer_player_id INTEGER NOT NULL,
@@ -662,6 +673,7 @@ class StatsStore:
             CREATE INDEX IF NOT EXISTS idx_tribes_name ON tribes(tribe_name);
             CREATE INDEX IF NOT EXISTS idx_dino_tame_player ON dino_tame_events(player_id);
             CREATE INDEX IF NOT EXISTS idx_player_kill_killer ON player_kill_events(killer_player_id);
+            CREATE INDEX IF NOT EXISTS idx_player_death_victim ON player_death_events(victim_player_id);
             CREATE INDEX IF NOT EXISTS idx_dino_kill_player ON dino_kill_events(killer_player_id);
             """
         )
@@ -868,6 +880,44 @@ class StatsStore:
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (killer_id, victim if victim else None, victim_player_id, None, now),
+            )
+            self.conn.commit()
+
+    async def record_player_death(
+        self,
+        victim_name: str,
+        killer_text: str | None = None,
+        event_time_text: str | None = None,
+        source_rule: str = "unknown",
+    ) -> None:
+        victim = victim_name.strip()
+        if not victim:
+            return
+        killer = (killer_text or "").strip()
+        logger.debug(
+            "Persist player death: victim=%s killer=%s source=%s",
+            victim,
+            killer,
+            source_rule,
+        )
+
+        async with self._lock:
+            now = utc_now_iso()
+            victim_id = self._ensure_player_locked(victim, now)
+            self.conn.execute(
+                """
+                INSERT INTO player_death_events (
+                    victim_player_id, victim_name, killer_text, event_time_text, source_rule, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    victim_id,
+                    victim,
+                    killer if killer else None,
+                    event_time_text,
+                    source_rule,
+                    now,
+                ),
             )
             self.conn.commit()
 
@@ -1280,9 +1330,29 @@ class ArkLogBot(discord.Client):
         if event.rule_name == "player_death_by":
             victim = ctx.get("player", "")
             killer = ctx.get("killer", "")
+            event_time_text = ctx.get("logtime", "")
             await self.stats_store.record_player_seen(victim)
+            await self.stats_store.record_player_death(
+                victim_name=victim,
+                killer_text=killer,
+                event_time_text=event_time_text,
+                source_rule=event.rule_name,
+            )
             if self._looks_like_player_name(killer):
                 await self.stats_store.record_player_kill(killer_name=killer, victim_name=victim)
+            return
+
+        if event.rule_name == "player_death_unknown":
+            victim = ctx.get("player", "")
+            event_time_text = ctx.get("logtime", "")
+            await self.stats_store.record_player_seen(victim)
+            await self.stats_store.record_player_death(
+                victim_name=victim,
+                killer_text=None,
+                event_time_text=event_time_text,
+                source_rule=event.rule_name,
+            )
+            return
 
     @staticmethod
     def _looks_like_player_name(killer: str) -> bool:
