@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger("ark-log-bot")
 DISCORD_MESSAGE_LOG_MARKER = "DISCORD_MESSAGE"
+PLAYER_LEVEL_SUFFIX_RE = re.compile(r"\s*-\s*Lvl\s+\d+\s*\([^)]*\)\s*$", re.IGNORECASE)
 
 
 def _parse_log_level(value: str, default_level: int) -> int:
@@ -570,8 +571,18 @@ class StatsStore:
         self.conn.execute("PRAGMA foreign_keys=ON;")
         self.conn.row_factory = sqlite3.Row
         self._lock = asyncio.Lock()
+        self._db_metrics: dict[str, int] = {"reads": 0, "writes": 0, "commits": 0}
         self._init_schema()
+        self._normalize_existing_player_rows()
         logger.info("SQLite DB bereit: %s", self.db_path)
+
+    @staticmethod
+    def normalize_player_name(raw_name: str) -> str:
+        normalized = (raw_name or "").strip()
+        if not normalized:
+            return ""
+        normalized = PLAYER_LEVEL_SUFFIX_RE.sub("", normalized).strip()
+        return normalized
 
     def _init_schema(self) -> None:
         logger.debug("Erstelle/prüfe Datenbankschema: %s", self.db_path)
@@ -686,8 +697,144 @@ class StatsStore:
         else:
             logger.debug("SQL: %s | params=%s", statement, params)
 
+    def _metric_inc(self, key: str, amount: int = 1) -> None:
+        self._db_metrics[key] = self._db_metrics.get(key, 0) + amount
+
+    def _normalize_existing_player_rows(self) -> None:
+        rows = self.conn.execute("SELECT id, player_name FROM players ORDER BY id").fetchall()
+        if not rows:
+            return
+
+        merges = 0
+        renames = 0
+        for row in rows:
+            source_id = int(row["id"])
+            source_name = str(row["player_name"])
+            normalized_name = self.normalize_player_name(source_name)
+            if not normalized_name or normalized_name == source_name:
+                continue
+
+            target_id = self._get_player_id_locked(normalized_name)
+            if target_id is None:
+                try:
+                    self.conn.execute(
+                        "UPDATE players SET player_name = ? WHERE id = ?",
+                        (normalized_name, source_id),
+                    )
+                    renames += 1
+                except sqlite3.IntegrityError:
+                    target_id = self._get_player_id_locked(normalized_name)
+
+            if target_id is not None and target_id != source_id:
+                self._merge_player_ids_locked(source_id=source_id, target_id=target_id)
+                merges += 1
+
+        if renames or merges:
+            self.conn.commit()
+            logger.info(
+                "Player-Normalisierung durchgefuehrt: umbenannt=%s zusammengefuehrt=%s",
+                renames,
+                merges,
+            )
+
+    def _merge_player_ids_locked(self, source_id: int, target_id: int) -> None:
+        if source_id == target_id:
+            return
+
+        source_player = self.conn.execute(
+            "SELECT first_seen_at, last_seen_at FROM players WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        target_player = self.conn.execute(
+            "SELECT first_seen_at, last_seen_at FROM players WHERE id = ?",
+            (target_id,),
+        ).fetchone()
+        if source_player is None or target_player is None:
+            return
+
+        min_first_seen = min(str(source_player["first_seen_at"]), str(target_player["first_seen_at"]))
+        max_last_seen = max(str(source_player["last_seen_at"]), str(target_player["last_seen_at"]))
+        self.conn.execute(
+            "UPDATE players SET first_seen_at = ?, last_seen_at = ? WHERE id = ?",
+            (min_first_seen, max_last_seen, target_id),
+        )
+
+        source_stats = self.conn.execute(
+            "SELECT dino_kills_total, player_kills_total, dino_tames_total FROM player_stats WHERE player_id = ?",
+            (source_id,),
+        ).fetchone()
+        if source_stats is not None:
+            now = utc_now_iso()
+            self.conn.execute(
+                """
+                INSERT INTO player_stats (player_id, dino_kills_total, player_kills_total, dino_tames_total, updated_at)
+                VALUES (?, 0, 0, 0, ?)
+                ON CONFLICT(player_id) DO NOTHING
+                """,
+                (target_id, now),
+            )
+            self.conn.execute(
+                """
+                UPDATE player_stats
+                SET dino_kills_total = dino_kills_total + ?,
+                    player_kills_total = player_kills_total + ?,
+                    dino_tames_total = dino_tames_total + ?,
+                    updated_at = ?
+                WHERE player_id = ?
+                """,
+                (
+                    int(source_stats["dino_kills_total"]),
+                    int(source_stats["player_kills_total"]),
+                    int(source_stats["dino_tames_total"]),
+                    now,
+                    target_id,
+                ),
+            )
+            self.conn.execute("DELETE FROM player_stats WHERE player_id = ?", (source_id,))
+
+        source_dino_rows = self.conn.execute(
+            "SELECT dino_type, kills_count, updated_at FROM player_dino_kills_by_type WHERE player_id = ?",
+            (source_id,),
+        ).fetchall()
+        for row in source_dino_rows:
+            self.conn.execute(
+                """
+                INSERT INTO player_dino_kills_by_type (player_id, dino_type, kills_count, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(player_id, dino_type) DO UPDATE
+                SET kills_count = player_dino_kills_by_type.kills_count + excluded.kills_count,
+                    updated_at = excluded.updated_at
+                """,
+                (target_id, str(row["dino_type"]), int(row["kills_count"]), str(row["updated_at"])),
+            )
+        self.conn.execute("DELETE FROM player_dino_kills_by_type WHERE player_id = ?", (source_id,))
+
+        source_memberships = self.conn.execute(
+            "SELECT tribe_id, last_seen_at FROM player_tribe_membership WHERE player_id = ?",
+            (source_id,),
+        ).fetchall()
+        for row in source_memberships:
+            self.conn.execute(
+                """
+                INSERT INTO player_tribe_membership (player_id, tribe_id, last_seen_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(player_id, tribe_id) DO UPDATE
+                SET last_seen_at = excluded.last_seen_at
+                """,
+                (target_id, int(row["tribe_id"]), str(row["last_seen_at"])),
+            )
+        self.conn.execute("DELETE FROM player_tribe_membership WHERE player_id = ?", (source_id,))
+
+        self.conn.execute("UPDATE dino_tame_events SET player_id = ? WHERE player_id = ?", (target_id, source_id))
+        self.conn.execute("UPDATE player_kill_events SET killer_player_id = ? WHERE killer_player_id = ?", (target_id, source_id))
+        self.conn.execute("UPDATE player_kill_events SET victim_player_id = ? WHERE victim_player_id = ?", (target_id, source_id))
+        self.conn.execute("UPDATE dino_kill_events SET killer_player_id = ? WHERE killer_player_id = ?", (target_id, source_id))
+        self.conn.execute("UPDATE player_death_events SET victim_player_id = ? WHERE victim_player_id = ?", (target_id, source_id))
+
+        self.conn.execute("DELETE FROM players WHERE id = ?", (source_id,))
+
     async def record_player_seen(self, player_name: str) -> int | None:
-        normalized = player_name.strip()
+        normalized = self.normalize_player_name(player_name)
         if not normalized:
             return None
         logger.debug("Persist Player Seen: %s", normalized)
@@ -707,10 +854,12 @@ class StatsStore:
                 (normalized, now, now),
             )
             self.conn.commit()
+            self._metric_inc("writes")
+            self._metric_inc("commits")
             return self._get_player_id_locked(normalized)
 
     async def link_player_to_tribe(self, player_name: str, tribe_name: str) -> None:
-        normalized_player = player_name.strip()
+        normalized_player = self.normalize_player_name(player_name)
         normalized_tribe = tribe_name.strip()
         if not normalized_player or not normalized_tribe:
             return
@@ -750,6 +899,8 @@ class StatsStore:
                 (player_id, tribe_id, now),
             )
             self.conn.commit()
+            self._metric_inc("writes", 3)
+            self._metric_inc("commits")
 
     async def record_dino_kill(
         self,
@@ -758,7 +909,7 @@ class StatsStore:
         event_time_text: str | None = None,
         source: str | None = None,
     ) -> None:
-        killer = killer_name.strip()
+        killer = self.normalize_player_name(killer_name)
         dino = dino_type.strip()
         if not killer or not dino:
             return
@@ -795,9 +946,11 @@ class StatsStore:
                 (killer_id, dino, event_time_text, source, now),
             )
             self.conn.commit()
+            self._metric_inc("writes", 3)
+            self._metric_inc("commits")
 
     async def record_dino_tame(self, player_name: str, dino_type: str, dino_level: int | None, tribe_name: str) -> None:
-        player = player_name.strip()
+        player = self.normalize_player_name(player_name)
         dino = dino_type.strip()
         tribe = tribe_name.strip()
         if not player or not dino:
@@ -847,10 +1000,12 @@ class StatsStore:
                 (player_id, tribe_id, dino, dino_level, None, now),
             )
             self.conn.commit()
+            self._metric_inc("writes", 3)
+            self._metric_inc("commits")
 
     async def record_player_kill(self, killer_name: str, victim_name: str) -> None:
-        killer = killer_name.strip()
-        victim = victim_name.strip()
+        killer = self.normalize_player_name(killer_name)
+        victim = self.normalize_player_name(victim_name)
         if not killer:
             return
         logger.debug("Persist player kill: killer=%s victim=%s", killer, victim)
@@ -882,6 +1037,8 @@ class StatsStore:
                 (killer_id, victim if victim else None, victim_player_id, None, now),
             )
             self.conn.commit()
+            self._metric_inc("writes", 2)
+            self._metric_inc("commits")
 
     async def record_player_death(
         self,
@@ -890,10 +1047,10 @@ class StatsStore:
         event_time_text: str | None = None,
         source_rule: str = "unknown",
     ) -> None:
-        victim = victim_name.strip()
+        victim = self.normalize_player_name(victim_name)
         if not victim:
             return
-        killer = (killer_text or "").strip()
+        killer = self.normalize_player_name(killer_text or "")
         logger.debug(
             "Persist player death: victim=%s killer=%s source=%s",
             victim,
@@ -920,6 +1077,8 @@ class StatsStore:
                 ),
             )
             self.conn.commit()
+            self._metric_inc("writes")
+            self._metric_inc("commits")
 
     async def fetch_top_players(self, metric: str, limit: int = 5) -> list[tuple[str, int]]:
         metric_column_map = {
@@ -945,6 +1104,7 @@ class StatsStore:
                 (limit,),
             )
             rows = cur.fetchall()
+            self._metric_inc("reads")
             return [(str(row["player_name"]), int(row["score"])) for row in rows]
 
     async def get_ingestion_offset(self, source_key: str) -> int:
@@ -954,6 +1114,7 @@ class StatsStore:
                 (source_key,),
             )
             row = cur.fetchone()
+            self._metric_inc("reads")
             if row is None:
                 return 0
             return max(0, int(row["position"]))
@@ -972,9 +1133,11 @@ class StatsStore:
                 (source_key, max(0, int(position)), now),
             )
             self.conn.commit()
+            self._metric_inc("writes")
+            self._metric_inc("commits")
 
     async def fetch_last_dino_kill_for_player(self, player_name: str) -> tuple[str, str, str, str] | None:
-        normalized = player_name.strip()
+        normalized = self.normalize_player_name(player_name)
         if not normalized:
             return None
 
@@ -991,6 +1154,7 @@ class StatsStore:
                 (normalized,),
             )
             row = cur.fetchone()
+            self._metric_inc("reads")
             if row is None:
                 return None
             return (
@@ -999,6 +1163,12 @@ class StatsStore:
                 str(row["event_time"]),
                 str(row["source"]),
             )
+
+    async def pop_db_metrics(self) -> dict[str, int]:
+        async with self._lock:
+            snapshot = dict(self._db_metrics)
+            self._db_metrics = {"reads": 0, "writes": 0, "commits": 0}
+            return snapshot
 
     def _ensure_player_locked(self, player_name: str, now_iso: str) -> int:
         self.conn.execute(
@@ -1049,6 +1219,8 @@ class ArkLogBot(discord.Client):
         burst_max_buffer_size: int,
         leaderboard_interval_seconds: int,
         discord_posting_enabled: bool,
+        db_discord_log_enabled: bool,
+        db_discord_log_interval_seconds: int,
     ):
         intents = discord.Intents.none()
         super().__init__(intents=intents)
@@ -1069,6 +1241,8 @@ class ArkLogBot(discord.Client):
         self.burst_max_buffer_size = burst_max_buffer_size
         self.leaderboard_interval_seconds = leaderboard_interval_seconds
         self.discord_posting_enabled = discord_posting_enabled
+        self.db_discord_log_enabled = db_discord_log_enabled
+        self.db_discord_log_interval_seconds = max(10, int(db_discord_log_interval_seconds))
 
         self.recent_events = deque(maxlen=200)
         self.last_sent_by_rule: dict[str, float] = {}
@@ -1080,6 +1254,7 @@ class ArkLogBot(discord.Client):
 
         self.bg_task: asyncio.Task | None = None
         self.leaderboard_task: asyncio.Task | None = None
+        self.db_log_task: asyncio.Task | None = None
 
         self.tree = app_commands.CommandTree(self)
         self._commands_registered = False
@@ -1165,6 +1340,8 @@ class ArkLogBot(discord.Client):
             self.bg_task = asyncio.create_task(self._watch_loop(), name="log-watch-loop")
         if self.leaderboard_task is None:
             self.leaderboard_task = asyncio.create_task(self._leaderboard_loop(), name="leaderboard-loop")
+        if self.db_log_task is None:
+            self.db_log_task = asyncio.create_task(self._db_log_loop(), name="db-log-loop")
 
     async def _resolve_channel(self) -> discord.TextChannel | None:
         channel = self.get_channel(self.channel_id)
@@ -1284,6 +1461,42 @@ class ArkLogBot(discord.Client):
                         logger.info("[%s] channel=%s payload=%s", DISCORD_MESSAGE_LOG_MARKER, channel.id, "leaderboard(all)")
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Fehler beim automatischen Leaderboard-Post: %s", exc)
+
+    async def _db_log_loop(self) -> None:
+        await self.wait_until_ready()
+        if not self.db_discord_log_enabled:
+            logger.info("Discord-DB-Telemetrie deaktiviert.")
+            return
+        if not self.discord_posting_enabled:
+            logger.info("Discord-Posting deaktiviert, DB-Telemetrie wird nicht in Discord gepostet.")
+            return
+
+        channel = await self._resolve_channel()
+        if channel is None:
+            return
+
+        logger.info(
+            "Discord-DB-Telemetrie aktiv (Intervall=%ss)",
+            self.db_discord_log_interval_seconds,
+        )
+        while not self.is_closed():
+            await asyncio.sleep(self.db_discord_log_interval_seconds)
+            try:
+                metrics = await self.stats_store.pop_db_metrics()
+                reads = int(metrics.get("reads", 0))
+                writes = int(metrics.get("writes", 0))
+                commits = int(metrics.get("commits", 0))
+                if reads == 0 and writes == 0 and commits == 0:
+                    continue
+
+                payload = (
+                    f"DB-Telemetrie ({self.db_discord_log_interval_seconds}s): "
+                    f"reads={reads} writes={writes} commits={commits}"
+                )
+                await channel.send(payload)
+                self._log_discord_payload(channel, payload)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Fehler in DB-Telemetrie-Loop: %s", exc)
 
     def _log_discord_payload(self, channel: discord.TextChannel, payload: str) -> None:
         if not self.log_discord_payloads:
@@ -1539,6 +1752,8 @@ def main() -> None:
     burst_max_buffer_size = int(os.getenv("BURST_MAX_BUFFER_SIZE", "250"))
     leaderboard_interval_seconds = int(os.getenv("LEADERBOARD_POST_INTERVAL_SECONDS", "21600"))
     discord_posting_enabled = _env_bool("ARK_DISCORD_POSTING_ENABLED", True)
+    db_discord_log_enabled = _env_bool("ARK_DB_DISCORD_LOG_ENABLED", False)
+    db_discord_log_interval_seconds = int(os.getenv("ARK_DB_DISCORD_LOG_INTERVAL_SECONDS", "300"))
     wild_kill_feature_enabled = _env_bool("ARK_WILD_KILLS_FEATURE_ENABLED", False)
 
     rule_engine = RuleEngine(rules_path=rules_path)
@@ -1562,6 +1777,8 @@ def main() -> None:
         burst_max_buffer_size=burst_max_buffer_size,
         leaderboard_interval_seconds=leaderboard_interval_seconds,
         discord_posting_enabled=discord_posting_enabled,
+        db_discord_log_enabled=db_discord_log_enabled,
+        db_discord_log_interval_seconds=db_discord_log_interval_seconds,
     )
 
     bot.run(token)

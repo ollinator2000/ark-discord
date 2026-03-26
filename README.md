@@ -268,6 +268,7 @@ Tabellen im Detail:
 - `players`
   - Zweck: eindeutige Spielerliste
   - Wichtige Felder: `id`, `player_name` (UNIQUE, case-insensitive), `first_seen_at`, `last_seen_at`
+  - Normalisierung: Suffixe wie ` - Lvl 47 (TribeName)` werden beim Schreiben entfernt, damit ein Spieler trotz Level-Up eindeutig bleibt
 - `tribes`
   - Zweck: eindeutige Tribeliste
   - Wichtige Felder: `id`, `tribe_name` (UNIQUE, case-insensitive), `first_seen_at`, `last_seen_at`
