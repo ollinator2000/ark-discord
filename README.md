@@ -61,6 +61,8 @@ copy .env.example .env
 - `BURST_MAX_BUFFER_SIZE`: Sofort-Flush bei sehr großem Burst (z. B. `250`)
 - `LEADERBOARD_POST_INTERVAL_SECONDS`: Auto-Post-Intervall (Default `21600` = 6h)
 - `ARK_DISCORD_POSTING_ENABLED`: `true`/`false` (Default `true`) zum temporären Deaktivieren aller Discord-Posts
+- `ARK_DB_DISCORD_LOG_ENABLED`: `true`/`false` (Default `false`) für kompakte DB-Zugriffstelemetrie im Discord-Channel
+- `ARK_DB_DISCORD_LOG_INTERVAL_SECONDS`: Intervall für DB-Telemetrie-Posts (Default `300`)
 - `ARK_LOG_FILE`: Dateipfad für Bot-Logs (Default `ark_discord_bot.log`)
 - `ARK_LOG_LEVEL`: Log-Level für Konsole (z. B. `INFO`, `DEBUG`, `WARNING`)
 - `ARK_LOG_FILE_LEVEL`: Log-Level für Datei (Standard wie `ARK_LOG_LEVEL`)
@@ -164,6 +166,11 @@ Der Bot erzeugt zwei Logging-Ziele:
 - `DB`: SQLite-Initialisierung, Persistenz-Operationen, Queries
 - `ERROR`: Exceptions inklusive Stacktrace
 
+Optional (Discord-Channel):
+
+- kompakte DB-Telemetrie-Nachricht im Format `DB-Telemetrie (300s): reads=.. writes=.. commits=..`
+- wird nur gesendet, wenn seit dem letzten Intervall DB-Aktivitaet stattgefunden hat
+
 ### Wie konfiguriere ich Logging?
 
 In der `.env` sind die Schalter:
@@ -178,6 +185,10 @@ In der `.env` sind die Schalter:
   - Intervall in Sekunden, nach dem der Logtail zwangsweise neu verifiziert wird (`0` = aus)
 - `ARK_DISCORD_POSTING_ENABLED` (Default: `true`)
   - `false` = keine Discord-Posts (inklusive Event-/Leaderboards), nur Bot-Log + Persistierung
+- `ARK_DB_DISCORD_LOG_ENABLED` (Default: `false`)
+  - `true` = periodische, kompakte DB-Telemetrie als Discord-Nachricht (nur bei Aktivität)
+- `ARK_DB_DISCORD_LOG_INTERVAL_SECONDS` (Default: `300`)
+  - Intervall in Sekunden für DB-Telemetrie
 - `ARK_LOG_DISCORD_MESSAGES` (Default: `true`)
   - `true` = Discord-Nachrichten auch ins Bot-Log schreiben
 - `ARK_DISCORD_MESSAGE_DEBUG` (Default: `true`)
@@ -191,6 +202,8 @@ export ARK_LOG_LEVEL=INFO
 export ARK_LOG_FILE_LEVEL=DEBUG
 export ARK_LOG_HARD_REOPEN_INTERVAL_SECONDS=900
 export ARK_DISCORD_POSTING_ENABLED=true
+export ARK_DB_DISCORD_LOG_ENABLED=false
+export ARK_DB_DISCORD_LOG_INTERVAL_SECONDS=300
 export ARK_LOG_DISCORD_MESSAGES=true
 export ARK_DISCORD_MESSAGE_DEBUG=true
 ```
@@ -284,6 +297,39 @@ Tabellen im Detail:
 - `ingestion_offsets`
   - Zweck: merkt, bis zu welcher Byte-Position externe Quellen bereits eingelesen wurden
   - Wichtige Felder: `source_key` (PK), `position`, `updated_at`
+
+## DB Schnelltests (SQLite)
+
+### Letzten Event-Eintrag finden
+
+Zeigt den neuesten `recorded_at`-Wert aus allen Event-Tabellen:
+
+```bash
+sqlite3 ark_stats.db "
+SELECT MAX(ts) AS last_event_utc
+FROM (
+  SELECT MAX(recorded_at) AS ts FROM dino_kill_events
+  UNION ALL
+  SELECT MAX(recorded_at) AS ts FROM dino_tame_events
+  UNION ALL
+  SELECT MAX(recorded_at) AS ts FROM player_kill_events
+  UNION ALL
+  SELECT MAX(recorded_at) AS ts FROM player_death_events
+);
+"
+```
+
+### Letztes CSV-Ingest-Update prüfen
+
+```bash
+sqlite3 ark_stats.db "SELECT MAX(updated_at) AS last_ingest_update_utc FROM ingestion_offsets;"
+```
+
+### Live prüfen, ob die DB weiter aktualisiert wird
+
+```bash
+watch -n 5 "sqlite3 ark_stats.db \"SELECT MAX(updated_at) FROM player_stats;\""
+```
 
 ## Bot-Rechte in Discord
 
