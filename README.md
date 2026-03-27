@@ -253,6 +253,7 @@ Wichtige Tabellen:
 - `players`
   - `id`, `player_name` (UNIQUE, NOCASE), `first_seen_at`, `last_seen_at`
   - Name wird normalisiert (z. B. `- Lvl ... (...) was` wird abgeschnitten)
+  - Dino-Killer mit Muster `Name - Lvl X (Typ) (Tribe) was` werden als `Name (Typ)` gespeichert
 - `player_stats`
   - `dino_kills_total`, `player_kills_total`, `dino_tames_total`
 - `player_dino_kills_by_type`

@@ -130,3 +130,21 @@ def test_record_and_fetch_last_dino_kill_uses_normalized_player_name(tmp_path):
     assert dino_type == "Raptor"
     assert source == "shootergame_log"
     assert event_time == "2026.03.26-20.37.05:603"
+
+
+def test_record_dino_kill_normalizes_leveled_dino_killer_to_name_and_species(tmp_path):
+    db_path = tmp_path / "test.db"
+    store = StatsStore(db_path=db_path)
+
+    run(
+        store.record_dino_kill(
+            killer_name="Dilli - Lvl 21 (Dilophosaur) (Pulpinesen) was",
+            dino_type="Dodo",
+            event_time_text="2026.03.27-10.00.00:000",
+            source="shootergame_log",
+        )
+    )
+
+    player = store.conn.execute("SELECT player_name FROM players LIMIT 1").fetchone()
+    assert player is not None
+    assert player["player_name"] == "Dilli (Dilophosaur)"

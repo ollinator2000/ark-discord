@@ -19,6 +19,10 @@ from dotenv import load_dotenv
 logger = logging.getLogger("ark-log-bot")
 DISCORD_MESSAGE_LOG_MARKER = "DISCORD_MESSAGE"
 PLAYER_LEVEL_SUFFIX_RE = re.compile(r"\s*-\s*Lvl\s+\d+\s*\([^)]*\)\s*(?:was)?\s*$", re.IGNORECASE)
+LEVELED_ENTITY_RE = re.compile(
+    r"^(?P<name>.+?)\s*-\s*Lvl\s+\d+\s+\((?P<tag1>[^)]*)\)(?:\s+\((?P<tag2>[^)]*)\))?\s*(?:was)?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _parse_log_level(value: str, default_level: int) -> int:
@@ -584,6 +588,26 @@ class StatsStore:
         normalized = PLAYER_LEVEL_SUFFIX_RE.sub("", normalized).strip()
         return normalized
 
+    @staticmethod
+    def normalize_identity_name(raw_name: str) -> str:
+        raw = (raw_name or "").strip()
+        if not raw:
+            return ""
+
+        match = LEVELED_ENTITY_RE.match(raw)
+        if match:
+            name = (match.group("name") or "").strip()
+            tag1 = (match.group("tag1") or "").strip()
+            tag2 = (match.group("tag2") or "").strip()
+            if name and tag1 and tag2:
+                # Dino-Killer-Format: Name - Lvl X (Species) (Tribe) was
+                return f"{name} ({tag1})"
+            if name:
+                # Spielerformat (oder nicht eindeutig): Name - Lvl X (Tribe) was
+                return name
+
+        return StatsStore.normalize_player_name(raw)
+
     def _init_schema(self) -> None:
         logger.debug("Erstelle/prüfe Datenbankschema: %s", self.db_path)
         cur = self.conn.cursor()
@@ -710,7 +734,7 @@ class StatsStore:
         for row in rows:
             source_id = int(row["id"])
             source_name = str(row["player_name"])
-            normalized_name = self.normalize_player_name(source_name)
+            normalized_name = self.normalize_identity_name(source_name)
             if not normalized_name or normalized_name == source_name:
                 continue
 
@@ -909,7 +933,7 @@ class StatsStore:
         event_time_text: str | None = None,
         source: str | None = None,
     ) -> None:
-        killer = self.normalize_player_name(killer_name)
+        killer = self.normalize_identity_name(killer_name)
         dino = dino_type.strip()
         if not killer or not dino:
             return
