@@ -1403,9 +1403,6 @@ class ArkLogBot(discord.Client):
 
                     await self._persist_event(event)
 
-                    if not self.discord_posting_enabled:
-                        continue
-
                     if event.event_class == "burst":
                         self._queue_burst_event(event)
                         continue
@@ -1427,8 +1424,7 @@ class ArkLogBot(discord.Client):
                     if new_csv_position != previous_csv_position:
                         await self.stats_store.set_ingestion_offset(self._wild_kill_source_key, new_csv_position)
 
-                if self.discord_posting_enabled:
-                    await self._flush_due_burst_events(channel)
+                await self._flush_due_burst_events(channel)
                 await asyncio.sleep(self.poll_interval)
                 tick_end = datetime.now(timezone.utc).timestamp()
                 loop_delay = tick_end - tick_start
@@ -1498,15 +1494,23 @@ class ArkLogBot(discord.Client):
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Fehler in DB-Telemetrie-Loop: %s", exc)
 
-    def _log_discord_payload(self, channel: discord.TextChannel, payload: str) -> None:
+    def _log_discord_payload(self, channel: discord.TextChannel | None, payload: str, dry_run: bool = False) -> None:
         if not self.log_discord_payloads:
             return
-        logger.info("[%s] channel=%s payload=%s", DISCORD_MESSAGE_LOG_MARKER, channel.id, payload)
+        channel_repr = channel.id if channel is not None else "dry-run"
+        marker = f"{DISCORD_MESSAGE_LOG_MARKER}_DRYRUN" if dry_run else DISCORD_MESSAGE_LOG_MARKER
+        logger.info("[%s] channel=%s payload=%s", marker, channel_repr, payload)
 
-    def _disambiguate_message_payload(self, embed: discord.Embed, channel: discord.TextChannel, event: ParsedEvent) -> str:
+    def _disambiguate_message_payload(
+        self,
+        embed: discord.Embed,
+        channel: discord.TextChannel | None,
+        event: ParsedEvent,
+    ) -> str:
         fields = ", ".join(f"{field.name}={field.value}" for field in embed.fields)
+        channel_repr = channel.id if channel is not None else "dry-run"
         return (
-            f"channel={channel.id} title={embed.title} description={embed.description} fields=[{fields}] "
+            f"channel={channel_repr} title={embed.title} description={embed.description} fields=[{fields}] "
             f"footer={embed.footer.text} ts={embed.timestamp.isoformat() if embed.timestamp else ''} rule={event.rule_name}"
         )
 
@@ -1578,10 +1582,7 @@ class ArkLogBot(discord.Client):
             return False
         return True
 
-    async def _send_immediate_event(self, channel: discord.TextChannel, event: ParsedEvent) -> None:
-        if not self.discord_posting_enabled:
-            return
-
+    async def _send_immediate_event(self, channel: discord.TextChannel | None, event: ParsedEvent) -> None:
         if event.key in self.recent_events:
             return
 
@@ -1594,9 +1595,18 @@ class ArkLogBot(discord.Client):
         self.last_sent_by_rule[event.rule_name] = now_ts
 
         embed = self._build_embed(event)
-        await channel.send(embed=embed)
+        if self.discord_posting_enabled and channel is not None:
+            await channel.send(embed=embed)
+            if self.discord_message_debug:
+                self._log_discord_payload(channel, self._disambiguate_message_payload(embed, channel, event))
+            return
+
         if self.discord_message_debug:
-            self._log_discord_payload(channel, self._disambiguate_message_payload(embed, channel, event))
+            self._log_discord_payload(
+                None,
+                self._disambiguate_message_payload(embed, None, event),
+                dry_run=True,
+            )
 
     def _queue_burst_event(self, event: ParsedEvent) -> None:
         now_ts = datetime.now(timezone.utc).timestamp()
@@ -1609,7 +1619,7 @@ class ArkLogBot(discord.Client):
 
         self.pending_burst_events[event.rule_name].append(event)
 
-    async def _flush_due_burst_events(self, channel: discord.TextChannel) -> None:
+    async def _flush_due_burst_events(self, channel: discord.TextChannel | None) -> None:
         now_ts = datetime.now(timezone.utc).timestamp()
         due_rules: list[str] = []
         for rule_name, started_ts in self.pending_burst_started_ts.items():
@@ -1635,15 +1645,12 @@ class ArkLogBot(discord.Client):
 
     async def _send_burst_summary(
         self,
-        channel: discord.TextChannel,
+        channel: discord.TextChannel | None,
         rule_name: str,
         events: list[ParsedEvent],
         started_ts: float,
         ended_ts: float,
     ) -> None:
-        if not self.discord_posting_enabled:
-            return
-
         first = events[0]
         counts = Counter(event.aggregate_key for event in events)
         top_items = counts.most_common(max(1, self.burst_top_items))
@@ -1666,9 +1673,18 @@ class ArkLogBot(discord.Client):
             inline=False,
         )
         embed.set_footer(text=f"ARK Ascended PvPvE Event Feed | {rule_name}")
-        await channel.send(embed=embed)
+        if self.discord_posting_enabled and channel is not None:
+            await channel.send(embed=embed)
+            if self.discord_message_debug:
+                self._log_discord_payload(channel, self._disambiguate_message_payload(embed, channel, first))
+            return
+
         if self.discord_message_debug:
-            self._log_discord_payload(channel, self._disambiguate_message_payload(embed, channel, first))
+            self._log_discord_payload(
+                None,
+                self._disambiguate_message_payload(embed, None, first),
+                dry_run=True,
+            )
 
     async def _build_leaderboard_embeds(self, board: str, requested_by: str) -> list[discord.Embed]:
         kinds: list[str]

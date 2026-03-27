@@ -80,6 +80,7 @@ Hinweise:
 
 - `ARK_DISCORD_POSTING_ENABLED` (`true`/`false`, Default `true`)
   - `false` = keine Discord-Posts, Verarbeitung/DB laufen weiter
+  - in Kombination mit `ARK_LOG_DISCORD_MESSAGES=true` werden Event-Nachrichten als Dry-Run im Bot-Log protokolliert (`DISCORD_MESSAGE_DRYRUN`)
 - `ARK_DB_DISCORD_LOG_ENABLED` (`true`/`false`, Default `false`)
   - kompakte DB-Telemetrie in Discord
 - `ARK_DB_DISCORD_LOG_INTERVAL_SECONDS` (Default `300`)
