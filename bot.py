@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger("ark-log-bot")
 DISCORD_MESSAGE_LOG_MARKER = "DISCORD_MESSAGE"
-PLAYER_LEVEL_SUFFIX_RE = re.compile(r"\s*-\s*Lvl\s+\d+\s*\([^)]*\)\s*$", re.IGNORECASE)
+PLAYER_LEVEL_SUFFIX_RE = re.compile(r"\s*-\s*Lvl\s+\d+\s*\([^)]*\)\s*(?:was)?\s*$", re.IGNORECASE)
 
 
 def _parse_log_level(value: str, default_level: int) -> int:

@@ -30,7 +30,7 @@
     },
     {
       "name": "player_death_by",
-      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) - Lvl (?P<level>\\d+) \\(\\) was killed by (?P<killer>.+?)!$",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) - Lvl (?P<level>\\d+) \\([^\\)]*\\) was killed by (?P<killer>.+?)!$",
       "title": "Spielertod",
       "description": "**{player}** (Lvl {level}) wurde von **{killer}** getoetet.",
       "emoji": "☠️",
@@ -44,7 +44,7 @@
     },
     {
       "name": "player_death_unknown",
-      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) - Lvl (?P<level>\\d+) \\(\\) was killed!$",
+      "pattern": "^\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}: (?P<player>.+?) - Lvl (?P<level>\\d+) \\([^\\)]*\\) was killed!$",
       "title": "Spielertod",
       "description": "**{player}** (Lvl {level}) ist gestorben.",
       "emoji": "⚰️",
