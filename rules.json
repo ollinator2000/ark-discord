@@ -117,7 +117,7 @@
     },
     {
       "name": "server_started",
-      "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\].*(?i:server started|server is starting|server up and running).*$",
+      "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\].*(?i:server started|server is starting|server up and running|server:\\s*\\\"?.+?\\\"?\\s*has\\s+successfully\\s+started!?).*$",
       "title": "Server gestartet",
       "description": "Der ARK Server wurde gestartet.",
       "emoji": "✅",

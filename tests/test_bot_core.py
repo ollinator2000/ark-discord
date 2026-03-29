@@ -24,6 +24,20 @@ def test_rule_engine_matches_player_death_with_tribe_name():
     assert event.context["killer"] == "a Raptor"
 
 
+def test_rule_engine_matches_server_started_successfully_line():
+    rules_path = Path(__file__).resolve().parents[1] / "rules.json"
+    engine = RuleEngine(rules_path=rules_path)
+
+    line = (
+        "[2026.03.29-06.38.10:510][  3]Server: "
+        "\"Pulpinesien|PVPVE|Leaderboards|MultiplierActive\" has successfully started!"
+    )
+    event = engine.parse_line(line)
+
+    assert event is not None
+    assert event.rule_name == "server_started"
+
+
 def test_wild_kill_csv_tail_parses_rows_and_skips_repeated_header(tmp_path):
     csv_path = tmp_path / "wild_kills.csv"
     csv_path.write_text(
