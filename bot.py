@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 from collections import Counter, deque
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -576,6 +577,8 @@ class StatsStore:
         self.conn.row_factory = sqlite3.Row
         self._lock = asyncio.Lock()
         self._db_metrics: dict[str, int] = {"reads": 0, "writes": 0, "commits": 0}
+        self._batch_mode = False
+        self._batch_pending_commit = False
         self._init_schema()
         self._normalize_existing_player_rows()
         logger.info("SQLite DB bereit: %s", self.db_path)
@@ -723,6 +726,28 @@ class StatsStore:
 
     def _metric_inc(self, key: str, amount: int = 1) -> None:
         self._db_metrics[key] = self._db_metrics.get(key, 0) + amount
+
+    def _commit_locked(self) -> None:
+        if self._batch_mode:
+            self._batch_pending_commit = True
+            return
+        self.conn.commit()
+        self._metric_inc("commits")
+
+    @asynccontextmanager
+    async def write_batch(self):
+        async with self._lock:
+            self._batch_mode = True
+            self._batch_pending_commit = False
+        try:
+            yield
+        finally:
+            async with self._lock:
+                self._batch_mode = False
+                if self._batch_pending_commit:
+                    self.conn.commit()
+                    self._metric_inc("commits")
+                self._batch_pending_commit = False
 
     def _normalize_existing_player_rows(self) -> None:
         rows = self.conn.execute("SELECT id, player_name FROM players ORDER BY id").fetchall()
@@ -877,9 +902,8 @@ class StatsStore:
                 """,
                 (normalized, now, now),
             )
-            self.conn.commit()
+            self._commit_locked()
             self._metric_inc("writes")
-            self._metric_inc("commits")
             return self._get_player_id_locked(normalized)
 
     async def link_player_to_tribe(self, player_name: str, tribe_name: str) -> None:
@@ -922,9 +946,8 @@ class StatsStore:
                 """,
                 (player_id, tribe_id, now),
             )
-            self.conn.commit()
+            self._commit_locked()
             self._metric_inc("writes", 3)
-            self._metric_inc("commits")
 
     async def record_dino_kill(
         self,
@@ -969,9 +992,8 @@ class StatsStore:
                 """,
                 (killer_id, dino, event_time_text, source, now),
             )
-            self.conn.commit()
+            self._commit_locked()
             self._metric_inc("writes", 3)
-            self._metric_inc("commits")
 
     async def record_dino_tame(self, player_name: str, dino_type: str, dino_level: int | None, tribe_name: str) -> None:
         player = self.normalize_player_name(player_name)
@@ -1023,9 +1045,8 @@ class StatsStore:
                 """,
                 (player_id, tribe_id, dino, dino_level, None, now),
             )
-            self.conn.commit()
+            self._commit_locked()
             self._metric_inc("writes", 3)
-            self._metric_inc("commits")
 
     async def record_player_kill(self, killer_name: str, victim_name: str) -> None:
         killer = self.normalize_player_name(killer_name)
@@ -1060,9 +1081,8 @@ class StatsStore:
                 """,
                 (killer_id, victim if victim else None, victim_player_id, None, now),
             )
-            self.conn.commit()
+            self._commit_locked()
             self._metric_inc("writes", 2)
-            self._metric_inc("commits")
 
     async def record_player_death(
         self,
@@ -1100,9 +1120,8 @@ class StatsStore:
                     now,
                 ),
             )
-            self.conn.commit()
+            self._commit_locked()
             self._metric_inc("writes")
-            self._metric_inc("commits")
 
     async def fetch_top_players(self, metric: str, limit: int = 5) -> list[tuple[str, int]]:
         metric_column_map = {
@@ -1156,9 +1175,8 @@ class StatsStore:
                 """,
                 (source_key, max(0, int(position)), now),
             )
-            self.conn.commit()
+            self._commit_locked()
             self._metric_inc("writes")
-            self._metric_inc("commits")
 
     async def fetch_last_dino_kill_for_player(self, player_name: str) -> tuple[str, str, str, str] | None:
         normalized = self.normalize_player_name(player_name)
@@ -1418,35 +1436,36 @@ class ArkLogBot(discord.Client):
         while not self.is_closed():
             try:
                 tick_start = datetime.now(timezone.utc).timestamp()
-                new_lines = self.tail.read_new_lines()
-                logger.debug("Watch-Tick: %s neue Zeilen", len(new_lines))
-                for line in new_lines:
-                    event = self.rule_engine.parse_line(line)
-                    if event is None:
-                        continue
+                async with self.stats_store.write_batch():
+                    new_lines = self.tail.read_new_lines()
+                    logger.debug("Watch-Tick: %s neue Zeilen", len(new_lines))
+                    for line in new_lines:
+                        event = self.rule_engine.parse_line(line)
+                        if event is None:
+                            continue
 
-                    await self._persist_event(event)
+                        await self._persist_event(event)
 
-                    if event.event_class == "burst":
-                        self._queue_burst_event(event)
-                        continue
+                        if event.event_class == "burst":
+                            self._queue_burst_event(event)
+                            continue
 
-                    await self._send_immediate_event(channel, event)
+                        await self._send_immediate_event(channel, event)
 
-                if self.wild_kill_feature_enabled and self.wild_kill_csv_tail is not None:
-                    previous_csv_position = self.wild_kill_csv_tail.position
-                    csv_kills, new_csv_position = self.wild_kill_csv_tail.read_new_kills()
-                    if csv_kills:
-                        logger.info("WildKill CSV neue Kills: %s", len(csv_kills))
-                    for killer_name, dino_name, event_time_text in csv_kills:
-                        await self.stats_store.record_dino_kill(
-                            killer_name=killer_name,
-                            dino_type=dino_name,
-                            event_time_text=event_time_text,
-                            source="wild_kills_csv",
-                        )
-                    if new_csv_position != previous_csv_position:
-                        await self.stats_store.set_ingestion_offset(self._wild_kill_source_key, new_csv_position)
+                    if self.wild_kill_feature_enabled and self.wild_kill_csv_tail is not None:
+                        previous_csv_position = self.wild_kill_csv_tail.position
+                        csv_kills, new_csv_position = self.wild_kill_csv_tail.read_new_kills()
+                        if csv_kills:
+                            logger.info("WildKill CSV neue Kills: %s", len(csv_kills))
+                        for killer_name, dino_name, event_time_text in csv_kills:
+                            await self.stats_store.record_dino_kill(
+                                killer_name=killer_name,
+                                dino_type=dino_name,
+                                event_time_text=event_time_text,
+                                source="wild_kills_csv",
+                            )
+                        if new_csv_position != previous_csv_position:
+                            await self.stats_store.set_ingestion_offset(self._wild_kill_source_key, new_csv_position)
 
                 await self._flush_due_burst_events(channel)
                 await asyncio.sleep(self.poll_interval)
