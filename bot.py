@@ -1385,8 +1385,10 @@ class ArkLogBot(discord.Client):
         )
         async def discordposting(interaction: discord.Interaction, action: app_commands.Choice[str]) -> None:
             if interaction.guild_id is not None:
-                member = interaction.user if isinstance(interaction.user, discord.Member) else None
-                if member is None or not member.guild_permissions.manage_guild:
+                perms = interaction.permissions
+                is_owner = interaction.guild is not None and interaction.user.id == interaction.guild.owner_id
+                has_permission = perms.administrator or perms.manage_guild or is_owner
+                if not has_permission:
                     await interaction.response.send_message(
                         "Du brauchst die Berechtigung `Manage Server`, um das Posting umzustellen.",
                         ephemeral=True,
