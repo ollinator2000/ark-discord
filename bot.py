@@ -1374,6 +1374,63 @@ class ArkLogBot(discord.Client):
             await interaction.response.send_message(embed=embed)
             logger.info("Lastkill abgefragt: player=%s user=%s", player_name, interaction.user)
 
+        @self.tree.command(name="discordposting", description="Discord-Posting zur Laufzeit steuern")
+        @app_commands.describe(action="Aktion")
+        @app_commands.choices(
+            action=[
+                app_commands.Choice(name="Status", value="status"),
+                app_commands.Choice(name="Aktivieren", value="enable"),
+                app_commands.Choice(name="Deaktivieren", value="disable"),
+            ]
+        )
+        async def discordposting(interaction: discord.Interaction, action: app_commands.Choice[str]) -> None:
+            if interaction.guild_id is not None:
+                member = interaction.user if isinstance(interaction.user, discord.Member) else None
+                if member is None or not member.guild_permissions.manage_guild:
+                    await interaction.response.send_message(
+                        "Du brauchst die Berechtigung `Manage Server`, um das Posting umzustellen.",
+                        ephemeral=True,
+                    )
+                    return
+
+            current_state = self.discord_posting_enabled
+            requested = action.value
+
+            if requested == "status":
+                status_text = "aktiviert" if current_state else "deaktiviert"
+                await interaction.response.send_message(
+                    f"Discord-Posting ist aktuell **{status_text}**.",
+                    ephemeral=True,
+                )
+                return
+
+            if requested == "enable":
+                self.discord_posting_enabled = True
+            elif requested == "disable":
+                self.discord_posting_enabled = False
+
+            new_state = self.discord_posting_enabled
+            if current_state == new_state:
+                status_text = "aktiviert" if new_state else "deaktiviert"
+                await interaction.response.send_message(
+                    f"Discord-Posting ist bereits **{status_text}**.",
+                    ephemeral=True,
+                )
+                return
+
+            status_text = "aktiviert" if new_state else "deaktiviert"
+            logger.info(
+                "Runtime Toggle: discord_posting_enabled=%s user=%s guild=%s channel=%s",
+                new_state,
+                interaction.user,
+                interaction.guild_id,
+                interaction.channel_id,
+            )
+            await interaction.response.send_message(
+                f"Discord-Posting wurde **{status_text}**.",
+                ephemeral=True,
+            )
+
         self._commands_registered = True
 
     async def on_ready(self) -> None:
@@ -1413,12 +1470,9 @@ class ArkLogBot(discord.Client):
 
     async def _watch_loop(self) -> None:
         await self.wait_until_ready()
-        if self.discord_posting_enabled:
-            channel = await self._resolve_channel()
-            if channel is None:
-                return
-        else:
-            channel = None
+        channel: discord.TextChannel | None = None
+        next_channel_resolve_ts = 0.0
+        if not self.discord_posting_enabled:
             logger.info("Discord-Posting deaktiviert. Events werden nur im Logfile verarbeitet.")
 
         logger.info("Starte Log-Watcher fuer %s", self.tail.path)
@@ -1436,6 +1490,17 @@ class ArkLogBot(discord.Client):
         while not self.is_closed():
             try:
                 tick_start = datetime.now(timezone.utc).timestamp()
+                if self.discord_posting_enabled and channel is None and tick_start >= next_channel_resolve_ts:
+                    channel = await self._resolve_channel()
+                    if channel is None:
+                        next_channel_resolve_ts = tick_start + 30.0
+                    else:
+                        logger.info("Discord-Channel erfolgreich aufgeloest: %s", channel.id)
+                        next_channel_resolve_ts = 0.0
+                elif not self.discord_posting_enabled and channel is not None:
+                    channel = None
+                    logger.info("Discord-Posting deaktiviert. Wechsle in Dry-Run-Modus.")
+
                 async with self.stats_store.write_batch():
                     new_lines = self.tail.read_new_lines()
                     logger.debug("Watch-Tick: %s neue Zeilen", len(new_lines))
@@ -1478,10 +1543,6 @@ class ArkLogBot(discord.Client):
 
     async def _leaderboard_loop(self) -> None:
         await self.wait_until_ready()
-        if not self.discord_posting_enabled:
-            logger.info("Discord-Posting deaktiviert. Automatisches Leaderboard ist pausiert.")
-            return
-
         if self.leaderboard_interval_seconds <= 0:
             logger.info("Automatisches Leaderboard deaktiviert (Intervall <= 0).")
             return
@@ -1490,6 +1551,9 @@ class ArkLogBot(discord.Client):
             logger.info("Nächster geplante Leaderboard-Post in %ss", self.leaderboard_interval_seconds)
             await asyncio.sleep(self.leaderboard_interval_seconds)
             try:
+                if not self.discord_posting_enabled:
+                    logger.info("Automatisches Leaderboard uebersprungen (Discord-Posting deaktiviert).")
+                    continue
                 channel = await self._resolve_channel()
                 if channel is None:
                     continue
@@ -1505,13 +1569,6 @@ class ArkLogBot(discord.Client):
         await self.wait_until_ready()
         if not self.db_discord_log_enabled:
             logger.info("Discord-DB-Telemetrie deaktiviert.")
-            return
-        if not self.discord_posting_enabled:
-            logger.info("Discord-Posting deaktiviert, DB-Telemetrie wird nicht in Discord gepostet.")
-            return
-
-        channel = await self._resolve_channel()
-        if channel is None:
             return
 
         logger.info(
@@ -1532,8 +1589,14 @@ class ArkLogBot(discord.Client):
                     f"DB-Telemetrie ({self.db_discord_log_interval_seconds}s): "
                     f"reads={reads} writes={writes} commits={commits}"
                 )
-                await channel.send(payload)
-                self._log_discord_payload(channel, payload)
+                if self.discord_posting_enabled:
+                    channel = await self._resolve_channel()
+                    if channel is not None:
+                        await channel.send(payload)
+                        self._log_discord_payload(channel, payload)
+                    continue
+
+                self._log_discord_payload(None, payload, dry_run=True)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Fehler in DB-Telemetrie-Loop: %s", exc)
 
