@@ -18,6 +18,7 @@ Und bietet:
   - `/leaderboard`
   - `/lastkill <playername>`
   - `/discordposting <status|enable|disable>`
+  - `/serverrestart`
 
 ## 2. Voraussetzungen
 
@@ -95,6 +96,24 @@ Hinweise:
 - `ARK_LOG_DISCORD_MESSAGES` (`true`/`false`)
 - `ARK_DISCORD_MESSAGE_DEBUG` (`true`/`false`)
 
+### 4.6 Server-Restart per Discord (optional)
+
+- `ARK_SERVER_RESTART_ENABLED` (`true`/`false`, Default `false`)
+- `ARK_SERVER_RESTART_COMMAND` (kompletter Command als String)
+- `ARK_SERVER_RESTART_TIMEOUT_SECONDS` (Default `300`)
+
+Beispiel:
+
+```env
+ARK_SERVER_RESTART_ENABLED=true
+ARK_SERVER_RESTART_COMMAND=sudo /home/pokuser/asa_server/POK-manager.sh -restart 0 testserver
+ARK_SERVER_RESTART_TIMEOUT_SECONDS=300
+```
+
+Wichtig:
+- Der Bot-Prozess-User muss den `sudo`-Command ohne interaktive Passwortabfrage ausfuehren duerfen (`NOPASSWD` in `sudoers`), sonst scheitert der Command.
+- Der Slash-Command ist auf User mit `Manage Server`/`Administrator` eingeschraenkt.
+
 ## 5. Erststart
 
 Bot starten:
@@ -169,6 +188,9 @@ Datei: `tests/test_bot_core.py`
 - `/discordposting status`
 - `/discordposting enable`
 - `/discordposting disable`
+  - benoetigt Discord-Berechtigung `Manage Server`
+- `/serverrestart`
+  - startet den in `ARK_SERVER_RESTART_COMMAND` konfigurierten Restart-Command
   - benoetigt Discord-Berechtigung `Manage Server`
 
 ## 7.2 Regelanpassungen (`rules.json`)

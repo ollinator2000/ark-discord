@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import sqlite3
 from collections import Counter, deque
 from contextlib import asynccontextmanager
@@ -1263,6 +1264,9 @@ class ArkLogBot(discord.Client):
         discord_posting_enabled: bool,
         db_discord_log_enabled: bool,
         db_discord_log_interval_seconds: int,
+        server_restart_enabled: bool,
+        server_restart_command: list[str],
+        server_restart_timeout_seconds: int,
     ):
         intents = discord.Intents.none()
         super().__init__(intents=intents)
@@ -1285,6 +1289,10 @@ class ArkLogBot(discord.Client):
         self.discord_posting_enabled = discord_posting_enabled
         self.db_discord_log_enabled = db_discord_log_enabled
         self.db_discord_log_interval_seconds = max(10, int(db_discord_log_interval_seconds))
+        self.server_restart_enabled = server_restart_enabled and bool(server_restart_command)
+        self.server_restart_command = list(server_restart_command)
+        self.server_restart_timeout_seconds = max(10, int(server_restart_timeout_seconds))
+        self.server_restart_lock = asyncio.Lock()
 
         self.recent_events = deque(maxlen=200)
         self.last_sent_by_rule: dict[str, float] = {}
@@ -1384,16 +1392,12 @@ class ArkLogBot(discord.Client):
             ]
         )
         async def discordposting(interaction: discord.Interaction, action: app_commands.Choice[str]) -> None:
-            if interaction.guild_id is not None:
-                perms = interaction.permissions
-                is_owner = interaction.guild is not None and interaction.user.id == interaction.guild.owner_id
-                has_permission = perms.administrator or perms.manage_guild or is_owner
-                if not has_permission:
-                    await interaction.response.send_message(
-                        "Du brauchst die Berechtigung `Manage Server`, um das Posting umzustellen.",
-                        ephemeral=True,
-                    )
-                    return
+            if not self._has_manage_permission(interaction):
+                await interaction.response.send_message(
+                    "Du brauchst die Berechtigung `Manage Server`, um das Posting umzustellen.",
+                    ephemeral=True,
+                )
+                return
 
             current_state = self.discord_posting_enabled
             requested = action.value
@@ -1433,7 +1437,95 @@ class ArkLogBot(discord.Client):
                 ephemeral=True,
             )
 
+        @self.tree.command(name="serverrestart", description="Startet den ARK-Server-Restart")
+        async def serverrestart(interaction: discord.Interaction) -> None:
+            if not self._has_manage_permission(interaction):
+                await interaction.response.send_message(
+                    "Du brauchst die Berechtigung `Manage Server`, um den Restart auszufuehren.",
+                    ephemeral=True,
+                )
+                return
+
+            if not self.server_restart_enabled:
+                await interaction.response.send_message(
+                    "Server-Restart Feature ist deaktiviert. Setze `ARK_SERVER_RESTART_ENABLED=true` und einen Command.",
+                    ephemeral=True,
+                )
+                return
+
+            if self.server_restart_lock.locked():
+                await interaction.response.send_message(
+                    "Ein Restart wird bereits ausgefuehrt. Bitte kurz warten.",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            async with self.server_restart_lock:
+                command_text = " ".join(self.server_restart_command)
+                logger.info(
+                    "Serverrestart angefordert user=%s guild=%s channel=%s command=%s",
+                    interaction.user,
+                    interaction.guild_id,
+                    interaction.channel_id,
+                    command_text,
+                )
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *self.server_restart_command,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout_b, stderr_b = await asyncio.wait_for(
+                        proc.communicate(),
+                        timeout=float(self.server_restart_timeout_seconds),
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("Serverrestart Timeout nach %ss: %s", self.server_restart_timeout_seconds, command_text)
+                    await interaction.followup.send(
+                        f"Restart-Command Timeout nach {self.server_restart_timeout_seconds}s.",
+                        ephemeral=True,
+                    )
+                    return
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Fehler beim Ausfuehren des Restart-Commands: %s", exc)
+                    await interaction.followup.send(
+                        f"Fehler beim Starten des Restart-Commands: `{exc}`",
+                        ephemeral=True,
+                    )
+                    return
+
+                stdout_text = (stdout_b or b"").decode("utf-8", errors="replace").strip()
+                stderr_text = (stderr_b or b"").decode("utf-8", errors="replace").strip()
+                if proc.returncode == 0:
+                    logger.info(
+                        "Serverrestart erfolgreich returncode=%s stdout=%s stderr=%s",
+                        proc.returncode,
+                        stdout_text,
+                        stderr_text,
+                    )
+                    await interaction.followup.send("Restart-Command wurde erfolgreich ausgefuehrt.", ephemeral=True)
+                    return
+
+                logger.error(
+                    "Serverrestart fehlgeschlagen returncode=%s stdout=%s stderr=%s",
+                    proc.returncode,
+                    stdout_text,
+                    stderr_text,
+                )
+                await interaction.followup.send(
+                    f"Restart-Command fehlgeschlagen (Exit-Code {proc.returncode}). Details im Bot-Log.",
+                    ephemeral=True,
+                )
+
         self._commands_registered = True
+
+    def _has_manage_permission(self, interaction: discord.Interaction) -> bool:
+        if interaction.guild_id is None:
+            return True
+        perms = interaction.permissions
+        is_owner = interaction.guild is not None and interaction.user.id == interaction.guild.owner_id
+        return perms.administrator or perms.manage_guild or is_owner
 
     async def on_ready(self) -> None:
         logger.info("Bot eingeloggt als %s (%s)", self.user, self.user.id if self.user else "?")
@@ -1879,6 +1971,12 @@ def main() -> None:
     db_discord_log_enabled = _env_bool("ARK_DB_DISCORD_LOG_ENABLED", False)
     db_discord_log_interval_seconds = int(os.getenv("ARK_DB_DISCORD_LOG_INTERVAL_SECONDS", "300"))
     wild_kill_feature_enabled = _env_bool("ARK_WILD_KILLS_FEATURE_ENABLED", False)
+    server_restart_enabled = _env_bool("ARK_SERVER_RESTART_ENABLED", False)
+    server_restart_command_raw = os.getenv("ARK_SERVER_RESTART_COMMAND", "").strip()
+    server_restart_timeout_seconds = int(os.getenv("ARK_SERVER_RESTART_TIMEOUT_SECONDS", "300"))
+    server_restart_command = shlex.split(server_restart_command_raw) if server_restart_command_raw else []
+    if server_restart_enabled and not server_restart_command:
+        logger.warning("ARK_SERVER_RESTART_ENABLED=true, aber ARK_SERVER_RESTART_COMMAND ist leer.")
 
     rule_engine = RuleEngine(rules_path=rules_path)
     tail = LogTail(path=log_path, hard_reopen_interval_seconds=hard_reopen_interval_seconds)
@@ -1903,6 +2001,9 @@ def main() -> None:
         discord_posting_enabled=discord_posting_enabled,
         db_discord_log_enabled=db_discord_log_enabled,
         db_discord_log_interval_seconds=db_discord_log_interval_seconds,
+        server_restart_enabled=server_restart_enabled,
+        server_restart_command=server_restart_command,
+        server_restart_timeout_seconds=server_restart_timeout_seconds,
     )
 
     bot.run(token)
