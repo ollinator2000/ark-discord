@@ -52,6 +52,20 @@ def test_rule_engine_matches_ingame_chat_line():
     assert event.context["message"] == "Hallo zusammen"
 
 
+def test_rule_engine_matches_ingame_chat_player_colon_line():
+    rules_path = Path(__file__).resolve().parents[1] / "rules.json"
+    engine = RuleEngine(rules_path=rules_path)
+
+    line = "[2026.04.12-13.44.54:401][651]2026.04.12_13.44.54: Ollinator (Ollinator): Moinsens Franky!!!"
+    event = engine.parse_line(line)
+
+    assert event is not None
+    assert event.rule_name == "ingame_chat_message_player_colon"
+    assert event.context["player"] == "Ollinator"
+    assert event.context["charname"] == "Ollinator"
+    assert event.context["message"] == "Moinsens Franky!!!"
+
+
 def test_wild_kill_csv_tail_parses_rows_and_skips_repeated_header(tmp_path):
     csv_path = tmp_path / "wild_kills.csv"
     csv_path.write_text(

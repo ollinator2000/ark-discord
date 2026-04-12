@@ -116,6 +116,19 @@
       ]
     },
     {
+      "name": "ingame_chat_message_player_colon",
+      "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\]\\d{4}\\.\\d{2}\\.\\d{2}_\\d{2}\\.\\d{2}\\.\\d{2}:\\s*(?P<player>[^\\(\\):]+?)\\s*\\((?P<charname>[^\\)]*?)\\)\\s*:\\s*(?P<message>.+)$",
+      "title": "Ingame Chat",
+      "description": "**{player}**: {message}",
+      "emoji": "💬",
+      "color": 10181046,
+      "event_class": "normal",
+      "fields": [
+        { "name": "Spieler", "value": "{player}" },
+        { "name": "Char", "value": "{charname}" }
+      ]
+    },
+    {
       "name": "ingame_chat_message",
       "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\].*?(?P<channel>Global|Tribe|Local)\\s+Chat(?:\\s+Message)?(?:\\s+from)?\\s*[\\\"']?(?P<player>[^:\\\"']+)[\\\"']?\\s*:\\s*(?P<message>.+)$",
       "title": "Ingame Chat",
