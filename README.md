@@ -19,6 +19,7 @@ Und bietet:
   - `/lastkill <playername>`
   - `/discordposting <status|enable|disable>`
   - `/serverrestart`
+  - `/arksay <message>`
 
 ## 2. Voraussetzungen
 
@@ -114,6 +115,33 @@ Wichtig:
 - Der Bot-Prozess-User muss den `sudo`-Command ohne interaktive Passwortabfrage ausfuehren duerfen (`NOPASSWD` in `sudoers`), sonst scheitert der Command.
 - Der Slash-Command ist auf User mit `Manage Server`/`Administrator` eingeschraenkt.
 
+### 4.7 Ingame-Chat Bridge (optional)
+
+- `ARK_INGAME_CHAT_TO_DISCORD_ENABLED` (`true`/`false`, Default `false`)
+  - schickt erkannte Ingame-Chatzeilen aus `ShooterGame.log` in Discord
+- `ARK_DISCORD_TO_INGAME_ENABLED` (`true`/`false`, Default `false`)
+  - aktiviert Slash-Command `/arksay`
+- `ARK_DISCORD_TO_INGAME_PREFIX` (Default `[Discord]`)
+  - Prefix fuer Ingame-Nachrichten aus Discord
+- `ARK_DISCORD_TO_INGAME_RATE_LIMIT_SECONDS` (Default `2.5`)
+  - minimales Intervall zwischen zwei `/arksay` Nachrichten
+- `ARK_DISCORD_TO_INGAME_MAX_LENGTH` (Default `220`)
+  - maximale Zeichenlaenge pro Nachricht
+- `ARK_RCON_HOST`, `ARK_RCON_PORT`, `ARK_RCON_PASSWORD`
+  - RCON-Verbindung fuer Discord -> Ingame
+- `ARK_RCON_TIMEOUT_SECONDS` (Default `5`)
+
+Beispiel:
+
+```env
+ARK_INGAME_CHAT_TO_DISCORD_ENABLED=true
+ARK_DISCORD_TO_INGAME_ENABLED=true
+ARK_DISCORD_TO_INGAME_PREFIX=[Discord]
+ARK_RCON_HOST=127.0.0.1
+ARK_RCON_PORT=27020
+ARK_RCON_PASSWORD=dein_rcon_passwort
+```
+
 ## 5. Erststart
 
 Bot starten:
@@ -191,6 +219,9 @@ Datei: `tests/test_bot_core.py`
   - benoetigt Discord-Berechtigung `Manage Server`
 - `/serverrestart`
   - startet den in `ARK_SERVER_RESTART_COMMAND` konfigurierten Restart-Command
+  - benoetigt Discord-Berechtigung `Manage Server`
+- `/arksay <message>`
+  - sendet eine Nachricht per RCON als `ServerChat` ins Spiel
   - benoetigt Discord-Berechtigung `Manage Server`
 
 ## 7.2 Regelanpassungen (`rules.json`)

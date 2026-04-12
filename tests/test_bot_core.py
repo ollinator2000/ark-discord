@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from bot import RuleEngine, StatsStore, WildKillCsvTail
+from bot import ArkLogBot, RuleEngine, StatsStore, WildKillCsvTail
 
 
 def run(coro):
@@ -36,6 +36,20 @@ def test_rule_engine_matches_server_started_successfully_line():
 
     assert event is not None
     assert event.rule_name == "server_started"
+
+
+def test_rule_engine_matches_ingame_chat_line():
+    rules_path = Path(__file__).resolve().parents[1] / "rules.json"
+    engine = RuleEngine(rules_path=rules_path)
+
+    line = "[2026.04.12-11.15.00:000][123]Global Chat from 'Ollinator': Hallo zusammen"
+    event = engine.parse_line(line)
+
+    assert event is not None
+    assert event.rule_name == "ingame_chat_message"
+    assert event.context["player"] == "Ollinator"
+    assert event.context["channel"] == "Global"
+    assert event.context["message"] == "Hallo zusammen"
 
 
 def test_wild_kill_csv_tail_parses_rows_and_skips_repeated_header(tmp_path):
@@ -162,3 +176,8 @@ def test_record_dino_kill_normalizes_leveled_dino_killer_to_name_and_species(tmp
     player = store.conn.execute("SELECT player_name FROM players LIMIT 1").fetchone()
     assert player is not None
     assert player["player_name"] == "Dilli (Dilophosaur)"
+
+
+def test_sanitize_outgoing_chat_message_removes_newlines_and_trims():
+    cleaned = ArkLogBot._sanitize_outgoing_chat_message("  Hallo\nWelt\r!  ", 10)
+    assert cleaned == "Hallo Welt"

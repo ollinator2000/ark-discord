@@ -116,6 +116,31 @@
       ]
     },
     {
+      "name": "ingame_chat_message",
+      "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\].*?(?P<channel>Global|Tribe|Local)\\s+Chat(?:\\s+Message)?(?:\\s+from)?\\s*[\\\"']?(?P<player>[^:\\\"']+)[\\\"']?\\s*:\\s*(?P<message>.+)$",
+      "title": "Ingame Chat",
+      "description": "**{player}**: {message}",
+      "emoji": "💬",
+      "color": 10181046,
+      "event_class": "normal",
+      "fields": [
+        { "name": "Kanal", "value": "{channel}" },
+        { "name": "Spieler", "value": "{player}" }
+      ]
+    },
+    {
+      "name": "ingame_chat_message_generic",
+      "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\].*?Chat(?:\\s+Message)?(?:\\s+from)?\\s*[\\\"']?(?P<player>[^:\\\"']+)[\\\"']?\\s*:\\s*(?P<message>.+)$",
+      "title": "Ingame Chat",
+      "description": "**{player}**: {message}",
+      "emoji": "💬",
+      "color": 10181046,
+      "event_class": "normal",
+      "fields": [
+        { "name": "Spieler", "value": "{player}" }
+      ]
+    },
+    {
       "name": "server_started",
       "pattern": "^(?:.+?:)?\\[(?P<logtime>[^\\]]+)\\]\\[\\s*\\d+\\].*(?i:server started|server is starting|server up and running|server:\\s*\\\"?.+?\\\"?\\s*has\\s+successfully\\s+started!?).*$",
       "title": "Server gestartet",

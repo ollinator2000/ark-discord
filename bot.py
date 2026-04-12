@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import sqlite3
+import struct
 from collections import Counter, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -78,6 +79,71 @@ def configure_logging() -> None:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class RconClient:
+    SERVERDATA_RESPONSE_VALUE = 0
+    SERVERDATA_EXECCOMMAND = 2
+    SERVERDATA_AUTH = 3
+    SERVERDATA_AUTH_RESPONSE = 2
+
+    def __init__(self, host: str, port: int, password: str, timeout_seconds: float = 5.0):
+        self.host = host
+        self.port = int(port)
+        self.password = password
+        self.timeout_seconds = max(1.0, float(timeout_seconds))
+
+    async def execute(self, command: str) -> str:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(self.host, self.port),
+            timeout=self.timeout_seconds,
+        )
+        try:
+            await self._authenticate(reader, writer)
+            request_id = 2
+            await self._send_packet(writer, request_id, self.SERVERDATA_EXECCOMMAND, command)
+            packet_id, _, body = await asyncio.wait_for(self._read_packet(reader), timeout=self.timeout_seconds)
+            if packet_id == -1:
+                raise RuntimeError("RCON command rejected by server.")
+            return body
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def _authenticate(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await self._send_packet(writer, 1, self.SERVERDATA_AUTH, self.password)
+        for _ in range(4):
+            packet_id, packet_type, _ = await asyncio.wait_for(self._read_packet(reader), timeout=self.timeout_seconds)
+            if packet_type != self.SERVERDATA_AUTH_RESPONSE:
+                continue
+            if packet_id == -1:
+                raise RuntimeError("RCON authentication failed.")
+            return
+        raise RuntimeError("RCON authentication response not received.")
+
+    @staticmethod
+    async def _send_packet(
+        writer: asyncio.StreamWriter,
+        request_id: int,
+        packet_type: int,
+        body: str,
+    ) -> None:
+        payload = body.encode("utf-8")
+        size = 4 + 4 + len(payload) + 2
+        packet = struct.pack("<iii", size, request_id, packet_type) + payload + b"\x00\x00"
+        writer.write(packet)
+        await writer.drain()
+
+    @staticmethod
+    async def _read_packet(reader: asyncio.StreamReader) -> tuple[int, int, str]:
+        size_buf = await reader.readexactly(4)
+        (size,) = struct.unpack("<i", size_buf)
+        if size < 10:
+            raise RuntimeError(f"Invalid RCON packet size: {size}")
+        data = await reader.readexactly(size)
+        request_id, packet_type = struct.unpack("<ii", data[:8])
+        body = data[8:-2].decode("utf-8", errors="replace")
+        return request_id, packet_type, body
 
 
 @dataclass
@@ -1267,6 +1333,12 @@ class ArkLogBot(discord.Client):
         server_restart_enabled: bool,
         server_restart_command: list[str],
         server_restart_timeout_seconds: int,
+        ingame_chat_to_discord_enabled: bool,
+        discord_to_ingame_enabled: bool,
+        discord_to_ingame_prefix: str,
+        discord_to_ingame_rate_limit_seconds: float,
+        discord_to_ingame_max_length: int,
+        rcon_client: RconClient | None,
     ):
         intents = discord.Intents.none()
         super().__init__(intents=intents)
@@ -1293,6 +1365,13 @@ class ArkLogBot(discord.Client):
         self.server_restart_command = list(server_restart_command)
         self.server_restart_timeout_seconds = max(10, int(server_restart_timeout_seconds))
         self.server_restart_lock = asyncio.Lock()
+        self.ingame_chat_to_discord_enabled = ingame_chat_to_discord_enabled
+        self.discord_to_ingame_enabled = discord_to_ingame_enabled and rcon_client is not None
+        self.discord_to_ingame_prefix = discord_to_ingame_prefix.strip()
+        self.discord_to_ingame_rate_limit_seconds = max(0.0, float(discord_to_ingame_rate_limit_seconds))
+        self.discord_to_ingame_max_length = max(40, int(discord_to_ingame_max_length))
+        self.rcon_client = rcon_client
+        self._last_ingame_send_ts = 0.0
 
         self.recent_events = deque(maxlen=200)
         self.last_sent_by_rule: dict[str, float] = {}
@@ -1518,6 +1597,56 @@ class ArkLogBot(discord.Client):
                     ephemeral=True,
                 )
 
+        @self.tree.command(name="arksay", description="Sendet eine Nachricht aus Discord ins ARK-Spiel")
+        @app_commands.describe(message="Nachricht fuer den Ingame-Chat")
+        async def arksay(interaction: discord.Interaction, message: str) -> None:
+            if not self._has_manage_permission(interaction):
+                await interaction.response.send_message(
+                    "Du brauchst die Berechtigung `Manage Server`, um Ingame-Nachrichten zu senden.",
+                    ephemeral=True,
+                )
+                return
+
+            if not self.discord_to_ingame_enabled or self.rcon_client is None:
+                await interaction.response.send_message(
+                    "Discord -> Ingame ist deaktiviert. Bitte RCON-Konfiguration pruefen.",
+                    ephemeral=True,
+                )
+                return
+
+            now_ts = datetime.now(timezone.utc).timestamp()
+            if self.discord_to_ingame_rate_limit_seconds > 0:
+                remaining = self.discord_to_ingame_rate_limit_seconds - (now_ts - self._last_ingame_send_ts)
+                if remaining > 0:
+                    await interaction.response.send_message(
+                        f"Rate-Limit aktiv. Bitte in {remaining:.1f}s erneut versuchen.",
+                        ephemeral=True,
+                    )
+                    return
+
+            cleaned_message = self._sanitize_outgoing_chat_message(message, self.discord_to_ingame_max_length)
+            if not cleaned_message:
+                await interaction.response.send_message("Nachricht ist leer.", ephemeral=True)
+                return
+
+            sender = self._sanitize_outgoing_chat_message(interaction.user.display_name, 32) or "Discord"
+            prefix = self.discord_to_ingame_prefix
+            chat_text = f"{prefix} {sender}: {cleaned_message}".strip() if prefix else f"{sender}: {cleaned_message}"
+            command = f"ServerChat {chat_text}"
+
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                logger.info("RCON Ingame Chat senden: user=%s command=%s", interaction.user, command)
+                response = await self.rcon_client.execute(command)
+                self._last_ingame_send_ts = datetime.now(timezone.utc).timestamp()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("RCON Fehler bei /arksay: %s", exc)
+                await interaction.followup.send(f"RCON-Fehler: `{exc}`", ephemeral=True)
+                return
+
+            logger.info("RCON Ingame Chat erfolgreich. response=%s", response.strip())
+            await interaction.followup.send("Nachricht wurde ins Spiel gesendet.", ephemeral=True)
+
         self._commands_registered = True
 
     def _has_manage_permission(self, interaction: discord.Interaction) -> bool:
@@ -1526,6 +1655,15 @@ class ArkLogBot(discord.Client):
         perms = interaction.permissions
         is_owner = interaction.guild is not None and interaction.user.id == interaction.guild.owner_id
         return perms.administrator or perms.manage_guild or is_owner
+
+    @staticmethod
+    def _sanitize_outgoing_chat_message(text: str, max_length: int) -> str:
+        value = (text or "").replace("\r", " ").replace("\n", " ").strip()
+        if not value:
+            return ""
+        if len(value) > max_length:
+            return value[:max_length].rstrip()
+        return value
 
     async def on_ready(self) -> None:
         logger.info("Bot eingeloggt als %s (%s)", self.user, self.user.id if self.user else "?")
@@ -1783,6 +1921,13 @@ class ArkLogBot(discord.Client):
         return True
 
     async def _send_immediate_event(self, channel: discord.TextChannel | None, event: ParsedEvent) -> None:
+        if event.rule_name.startswith("ingame_chat_message") and not self.ingame_chat_to_discord_enabled:
+            return
+        if event.rule_name.startswith("ingame_chat_message"):
+            msg = event.context.get("message", "")
+            if self.discord_to_ingame_prefix and msg.startswith(self.discord_to_ingame_prefix):
+                return
+
         if event.key in self.recent_events:
             return
 
@@ -1977,6 +2122,27 @@ def main() -> None:
     server_restart_command = shlex.split(server_restart_command_raw) if server_restart_command_raw else []
     if server_restart_enabled and not server_restart_command:
         logger.warning("ARK_SERVER_RESTART_ENABLED=true, aber ARK_SERVER_RESTART_COMMAND ist leer.")
+    ingame_chat_to_discord_enabled = _env_bool("ARK_INGAME_CHAT_TO_DISCORD_ENABLED", False)
+    discord_to_ingame_enabled = _env_bool("ARK_DISCORD_TO_INGAME_ENABLED", False)
+    discord_to_ingame_prefix = os.getenv("ARK_DISCORD_TO_INGAME_PREFIX", "[Discord]").strip()
+    discord_to_ingame_rate_limit_seconds = float(os.getenv("ARK_DISCORD_TO_INGAME_RATE_LIMIT_SECONDS", "2.5"))
+    discord_to_ingame_max_length = int(os.getenv("ARK_DISCORD_TO_INGAME_MAX_LENGTH", "220"))
+    rcon_host = os.getenv("ARK_RCON_HOST", "").strip()
+    rcon_port = int(os.getenv("ARK_RCON_PORT", "27020"))
+    rcon_password = os.getenv("ARK_RCON_PASSWORD", "")
+    rcon_timeout_seconds = float(os.getenv("ARK_RCON_TIMEOUT_SECONDS", "5"))
+    rcon_client: RconClient | None = None
+    if discord_to_ingame_enabled:
+        if not rcon_host or not rcon_password:
+            logger.warning("ARK_DISCORD_TO_INGAME_ENABLED=true, aber ARK_RCON_HOST oder ARK_RCON_PASSWORD fehlt.")
+            discord_to_ingame_enabled = False
+        else:
+            rcon_client = RconClient(
+                host=rcon_host,
+                port=rcon_port,
+                password=rcon_password,
+                timeout_seconds=rcon_timeout_seconds,
+            )
 
     rule_engine = RuleEngine(rules_path=rules_path)
     tail = LogTail(path=log_path, hard_reopen_interval_seconds=hard_reopen_interval_seconds)
@@ -2004,6 +2170,12 @@ def main() -> None:
         server_restart_enabled=server_restart_enabled,
         server_restart_command=server_restart_command,
         server_restart_timeout_seconds=server_restart_timeout_seconds,
+        ingame_chat_to_discord_enabled=ingame_chat_to_discord_enabled,
+        discord_to_ingame_enabled=discord_to_ingame_enabled,
+        discord_to_ingame_prefix=discord_to_ingame_prefix,
+        discord_to_ingame_rate_limit_seconds=discord_to_ingame_rate_limit_seconds,
+        discord_to_ingame_max_length=discord_to_ingame_max_length,
+        rcon_client=rcon_client,
     )
 
     bot.run(token)
